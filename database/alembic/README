@@ -1,0 +1,1 @@
+Generic single-database Alembic env for AI Advisor Bot. Run from repo root: alembic upgrade head

@@ -1,0 +1,12 @@
+# Backend-only deps (mirror of repo root for Docker build)
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+sqlalchemy[asyncio]>=2.0.36
+asyncpg>=0.30.0
+alembic>=1.14.0
+pydantic>=2.10.0
+pydantic-settings>=2.6.0
+pandas>=2.2.0
+numpy>=2.0.0
+apscheduler>=3.10.0
+polygon-api-client>=1.14.0

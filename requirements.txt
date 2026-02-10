@@ -1,0 +1,29 @@
+# AI Advisor Bot — Backend Dependencies
+# Phase 0 & 1: FastAPI, DB, Quant Engine, Ingestion stub
+
+# Web & API
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+
+# Database
+sqlalchemy[asyncio]>=2.0.36
+asyncpg>=0.30.0
+alembic>=1.14.0
+
+# Validation & Config
+pydantic>=2.10.0
+pydantic-settings>=2.6.0
+
+# Data & Numerics (Decimal is stdlib; pandas/numpy for future ingestion)
+pandas>=2.2.0
+numpy>=2.0.0
+
+# Background jobs (Phase 2 Watchman)
+apscheduler>=3.10.0
+
+# Market data (Polygon)
+polygon-api-client>=1.14.0
+
+# Optional: Redis for Celery (Phase 2)
+# redis>=5.2.0
+# celery[redis]>=5.4.0

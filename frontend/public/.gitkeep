@@ -1,0 +1,1 @@
+# Keep public dir for static assets; required by Dockerfile COPY

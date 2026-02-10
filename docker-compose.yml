@@ -1,0 +1,68 @@
+# AI Advisor Bot — Local Stack (Phase 0–3)
+# Run: docker compose up -d
+# API: http://localhost:8000  |  Frontend: http://localhost:3000
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: aiadvisor-postgres
+    environment:
+      POSTGRES_USER: aiadvisor
+      POSTGRES_PASSWORD: aiadvisor_dev
+      POSTGRES_DB: aiadvisor
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiadvisor -d aiadvisor"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: aiadvisor-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: aiadvisor-api
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aiadvisor:aiadvisor_dev@postgres:5432/aiadvisor
+      REDIS_URL: redis://redis:6379/0
+      PYTHONPATH: /app
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./database:/app/database
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: aiadvisor-frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data: {}
