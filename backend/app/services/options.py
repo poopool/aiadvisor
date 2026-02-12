@@ -78,3 +78,62 @@ def select_strike_by_delta(
     if not in_range:
         return None
     return min(in_range, key=lambda p: abs(abs(float(p["delta"])) - (low + high) / 2))
+
+
+def get_iv_target_expiry(chain: dict[str, Any], expiry_str: str, fallback_iv: float | None = None) -> float | None:
+    """
+    A-P7-01: Term structure — get IV for the target expiry (from selected option or interpolate).
+    Returns IV as decimal (e.g. 0.25 for 25%). Used for IV/NATR with exact DTE.
+    """
+    puts = chain.get("puts") or []
+    for p in puts:
+        exp = p.get("expiry")
+        if exp is None:
+            continue
+        if isinstance(exp, date):
+            exp = exp.isoformat()
+        if str(exp) == str(expiry_str):
+            iv = p.get("iv")
+            if iv is not None:
+                return float(iv)
+    return fallback_iv
+
+
+def get_skew_25d(chain: dict[str, Any], expiry_str: str) -> float:
+    """
+    A-P7-02: 25-Delta Skew = IV(Put_25Δ) - IV(Call_25Δ).
+    Returns skew in "points" (e.g. 0.10 = 10 vol points). Block Short Put if skew > MAX_SKEW_THRESHOLD.
+    If chain has no calls or no 25-delta data, returns 0 (do not block).
+    """
+    puts = chain.get("puts") or []
+    calls = chain.get("calls") or []
+    put_25 = None
+    call_25 = None
+    for p in puts:
+        exp = p.get("expiry")
+        if exp is None:
+            continue
+        if isinstance(exp, date):
+            exp = exp.isoformat()
+        if str(exp) != str(expiry_str):
+            continue
+        d = abs(float(p.get("delta", 0)))
+        if 0.22 <= d <= 0.28:
+            put_25 = float(p.get("iv") or 0)
+            break
+    for c in calls:
+        exp = c.get("expiry")
+        if exp is None:
+            continue
+        if isinstance(exp, date):
+            exp = exp.isoformat()
+        if str(exp) != str(expiry_str):
+            continue
+        d = float(c.get("delta", 0))
+        if 0.22 <= d <= 0.28:
+            call_25 = float(c.get("iv") or 0)
+            break
+    if put_25 is None or call_25 is None:
+        return 0.0
+    # Skew in points (e.g. 0.10 = 10 points)
+    return put_25 - call_25

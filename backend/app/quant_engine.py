@@ -1,6 +1,6 @@
 # AI Advisor Bot — Quantitative Engine (Phase 1)
 # Source of Truth: PROJECT_CONTEXT.md §4 — Deterministic Interfaces
-# All financial math uses Decimal; no floats for money or Greeks.
+# A-P5-02: All thresholds loaded from config; no hardcoded constants.
 
 from decimal import Decimal
 from typing import Literal
@@ -8,15 +8,21 @@ from typing import Literal
 from decimal import ROUND_HALF_UP
 
 
+def _get_iv_natr_min_ratio() -> Decimal:
+    from app.config import settings
+    return Decimal(str(getattr(settings, "iv_natr_min_ratio", 1.0)))
+
+
+def _get_dte_alert_threshold() -> int:
+    from app.config import settings
+    return getattr(settings, "dte_alert_threshold", 21)
+
+
 class QuantLaws:
     """
     Deterministic math for options analytics.
     All inputs/outputs for prices, IV, and ratios are Decimal.
     """
-
-    # A-FIX-01: Gate pass only if Ratio > 1.0 (Spec Patch v1.1)
-    IV_NATR_MIN_RATIO = Decimal("1.0")
-    DTE_ALERT_THRESHOLD = 21
 
     @staticmethod
     def calculate_expected_move(
@@ -62,16 +68,16 @@ class QuantLaws:
         # IV_30d as decimal; for ratio use same scale: IV_30d / (denom/100) or iv_pct/denom
         iv_pct = iv_30d * Decimal("100")
         ratio = iv_pct / denominator
-        threshold = min_ratio if min_ratio is not None else QuantLaws.IV_NATR_MIN_RATIO
+        threshold = min_ratio if min_ratio is not None else _get_iv_natr_min_ratio()
         passes = ratio > threshold
         return ratio.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), passes
 
     @staticmethod
     def check_21_dte(dte: int) -> Literal["OK", "ALERT"]:
         """
-        The 21 DTE Law: flag any position at <= 21 days to expiration.
-        Returns "ALERT" if DTE <= 21, else "OK".
+        The 21 DTE Law: flag any position at <= DTE_ALERT_THRESHOLD days to expiration.
+        Returns "ALERT" if DTE <= threshold, else "OK".
         """
-        if dte <= QuantLaws.DTE_ALERT_THRESHOLD:
+        if dte <= _get_dte_alert_threshold():
             return "ALERT"
         return "OK"

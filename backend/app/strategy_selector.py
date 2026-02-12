@@ -1,11 +1,22 @@
 # AI Advisor Bot — Strategy Selector (A-P1-04)
-# Maps technical state to option strategy. §4 Trend/RSI states.
+# Maps technical state to option strategy. §4 Trend/RSI states. A-P5-02: RSI thresholds from config.
 
 from decimal import Decimal
 from typing import Literal
 
+
+def _rsi_overbought() -> Decimal:
+    from app.config import settings
+    return Decimal(str(getattr(settings, "rsi_overbought", 70.0)))
+
+
+def _rsi_oversold() -> Decimal:
+    from app.config import settings
+    return Decimal(str(getattr(settings, "rsi_oversold", 30.0)))
+
+
 # Trend: Bullish = Price > SMA_200 and Price > SMA_50; Bearish = Price < SMA_50
-# RSI: Overbought > 70, Oversold < 30
+# RSI: Overbought/Oversold from config (default 70/30)
 
 
 def get_trend_state(
@@ -22,9 +33,9 @@ def get_trend_state(
 
 
 def get_rsi_state(rsi_14: Decimal) -> Literal["overbought", "oversold", "neutral"]:
-    if rsi_14 > Decimal("70"):
+    if rsi_14 > _rsi_overbought():
         return "overbought"
-    if rsi_14 < Decimal("30"):
+    if rsi_14 < _rsi_oversold():
         return "oversold"
     return "neutral"
 

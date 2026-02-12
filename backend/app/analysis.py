@@ -9,7 +9,7 @@ from app.quant_engine import QuantLaws
 from app.strategy_selector import get_trend_state, get_rsi_state, select_strategy
 from app.services.ingestion import fetch_market_data
 from app.services.regime import check_spy_above_sma200
-from app.services.options import fetch_option_chain, select_strike_by_delta
+from app.services.options import fetch_option_chain, select_strike_by_delta, get_iv_target_expiry, get_skew_25d
 from app.services.llm_synthesis import synthesize_thesis
 from app.services.universe import hard_earnings_exclusion
 
@@ -59,6 +59,7 @@ def run_analysis(
         "iv_natr_ratio": float(iv_natr_ratio),
         "expected_move_1sd": float(expected_move_1sd),
         "earnings_date": None,
+        "sector": latest.get("sector") or "Unknown",
     }
 
     # A-P1-04 Strategy (A-P1-07: no Short Put when SPY below 200 SMA)
@@ -68,6 +69,11 @@ def run_analysis(
         strategy = "NONE"
     # 2) Apply Efficiency Gate: IV/NATR > 1.0 required for Short Put; otherwise NONE
     if strategy == "SHORT_PUT" and not efficiency_passes:
+        strategy = "NONE"
+    # A-P5-03: Refined entry gates — RSI < RSI_ENTRY_THRESHOLD (e.g. 40) for Short Put
+    from app.config import settings
+    rsi_entry = getattr(settings, "rsi_entry_threshold", 40.0)
+    if strategy == "SHORT_PUT" and float(rsi_14) >= rsi_entry:
         strategy = "NONE"
 
     now = datetime.now(timezone.utc)
@@ -96,7 +102,34 @@ def run_analysis(
         expiry_str = selected["expiry"]
         expiry_date = date.fromisoformat(expiry_str)
         delta = float(selected.get("delta", -0.20))
-        credit_est = (float(selected.get("bid", 0)) + float(selected.get("ask", 0))) / 2
+        # A-FIX-12: Use Bid for credit (selling), Ask for buy-to-close cost
+        credit_est = float(selected.get("bid", 0))
+        buy_to_close_est = float(selected.get("ask", 0))
+        # A-P7-01: Use IV at target expiry for efficiency gate (not generic IV_30d)
+        iv_target_expiry = float(selected.get("iv", iv_30d))
+        iv_target_dec = Decimal(str(iv_target_expiry))
+        iv_natr_ratio_target, efficiency_at_expiry = QuantLaws.check_iv_natr_rule(iv_target_dec, atr_14, price)
+        if strategy == "SHORT_PUT" and not efficiency_at_expiry:
+            return {
+                "ticker": ticker.upper(),
+                "timestamp": timestamp,
+                "regime": regime,
+                "analysis": {**analysis_payload, "iv_natr_ratio_at_expiry": float(iv_natr_ratio_target)},
+                "recommendation": {"strategy": "NONE", "thesis": "Term structure: IV/NATR at target expiry failed."},
+            }
+        analysis_payload["iv_natr_ratio_at_expiry"] = float(iv_natr_ratio_target)
+        # A-P7-02: Volatility Skew Gate — block Short Put if 25Δ Skew > threshold (points)
+        skew_points = get_skew_25d(chain, expiry_str)
+        max_skew = getattr(settings, "max_skew_threshold", 10.0)
+        analysis_payload["skew_25d_points"] = skew_points * 100
+        if strategy == "SHORT_PUT" and abs(skew_points) > (max_skew / 100.0):
+            return {
+                "ticker": ticker.upper(),
+                "timestamp": timestamp,
+                "regime": regime,
+                "analysis": analysis_payload,
+                "recommendation": {"strategy": "NONE", "thesis": f"Skew gate: 25Δ skew {skew_points*100:.1f} pts > {max_skew}."},
+            }
         contract = f"{ticker.upper()}{expiry_date.strftime('%y%m%d')}P{int(strike * 1000):08d}"
     else:
         strike = (price - expected_move_1sd).quantize(Decimal("0.01"))
@@ -106,7 +139,26 @@ def run_analysis(
         strike = strike.quantize(Decimal("0.01"))
         delta = -0.20
         credit_est = 3.50
+        buy_to_close_est = 4.00
         contract = f"{ticker.upper()}{expiry_date.strftime('%y%m%d')}P{int(strike * 1000):08d}"
+
+    # A-P5-03: Yield gate — Annualized_Yield > MIN_YIELD_PCT (e.g. 20%). Yield = (credit/strike)*(365/DTE)
+    dte_days = (expiry_date - date.today()).days or 1
+    annualized_yield = (Decimal(str(credit_est)) / strike) * (Decimal("365") / Decimal(str(dte_days)))
+    min_yield = Decimal(str(getattr(settings, "min_yield_pct", 0.20)))
+    if strategy == "SHORT_PUT" and annualized_yield < min_yield:
+        strategy = "NONE"
+        recommendation_payload = {
+            "strategy": "NONE",
+            "thesis": f"Yield gate failed: annualized yield {float(annualized_yield):.2%} < {float(min_yield):.0%}.",
+        }
+        return {
+            "ticker": ticker.upper(),
+            "timestamp": timestamp,
+            "regime": regime,
+            "analysis": {**analysis_payload, "annualized_yield": float(annualized_yield)},
+            "recommendation": recommendation_payload,
+        }
 
     # A-FIX-03: Hard Earnings Exclusion — NO_TRADE if earnings between Today and Expiry
     earnings_date = latest.get("earnings_date")
@@ -123,6 +175,7 @@ def run_analysis(
 
     safety_ok = strike < (price - expected_move_1sd)
     safety_check = "Strike is outside 1-SD expected move" if safety_ok else "Strike within 1-SD; review manually"
+    analysis_payload["annualized_yield"] = float(annualized_yield)
 
     recommendation_payload = {
         "strategy": strategy,
@@ -131,6 +184,7 @@ def run_analysis(
         "expiry": expiry_date.isoformat(),
         "delta": delta,
         "credit_est": round(credit_est, 2),
+        "buy_to_close_est": round(buy_to_close_est, 2),
         "safety_check": safety_check,
     }
 

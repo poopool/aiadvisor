@@ -162,6 +162,53 @@ The system follows a containerized, 3-tier microservices architecture designed f
 | **A-P3-05** | **Sector Correlation Cap** | Prevents recommending more than 2 active trades in the same sector. | Trader | ✅ Completed |
 | **A-P3-06** | **Rate Limit Controller** | Implements a queuing system for API calls to prevent data provider throttling. | Arch | ✅ Completed |
 
+### Phase 4: Macro & Manager
+**Purpose**: Automation of the "Event Horizon" macro filter, "Income Shield" rolling logic, and refinement of entry criteria. Introduces strict externalization of all strategy configuration values to prevent hardcoding.
+
+| ID | Title | Acceptance Criteria (Pass/Fail) | Owners | Status |
+|---|---|---|---|---|
+| **A-P5-01** | **Macro Calendar Provider** | Implement `MacroCalendarProvider` (e.g. Econoday/Trading Economics API). Fetch "High Impact" events (CPI, NFP, FOMC). <br> **Gate**: Block new entries if event `Start_Time < Now + settings.MACRO_LOOKAHEAD_HOURS` (config: 48h). | Arch | ✅ Completed |
+| **A-P5-02** | **Externalized Strategy Config** | Refactor `QuantLaws` & `Watchman`. Remove all hardcoded constants (e.g., RSI 30/40, Yield 20%). <br> **Requirement**: All thresholds must be loaded from `app.config.Settings` or similar config file. | Arch | ✅ Completed |
+| **A-P5-03** | **Refined Entry Gates (Safety Floor)** | Update `analysis.py`. <br> **RSI**: Check `< settings.RSI_ENTRY_THRESHOLD` (config: 40). <br> **Yield**: Check `Annualized_Yield > settings.MIN_YIELD_PCT` (config: 0.20). | Trader | ✅ Completed |
+| **A-P5-04** | **Income Shield (Roll Logic)** | Update `watchman.py`. New alert type: `ROLL_NEEDED`. <br> **Trigger**: If `(Price - Strike)/Strike > settings.ROLL_ITM_PCT` (config: 0.03) AND `DTE < settings.ROLL_DTE_TRIGGER` (config: 14). | Trader | ✅ Completed |
+| **A-P5-05** | **Sector Value Exposure** | Update `ActivePosition` to track `capital_deployed`. <br> **Gate**: Block trade if `Sum(Capital) in Sector > settings.MAX_SECTOR_ALLOCATION` (config: 70%). | Arch | ✅ Completed |
+
+**Phase 4 implementation**: **A-P5-01**: `MacroCalendarProvider` in `app/services/macro_calendar.py` (Mock + Trading Economics stub); `macro_event_gate_blocked()` blocks new entries in `POST /analyze` and `POST /analyze/batch` when high-impact event within `macro_lookahead_hours`. **A-P5-02**: All thresholds in `config.Settings` (iv_natr_min_ratio, dte_alert_threshold, rsi_overbought/oversold, roll_itm_pct, roll_dte_trigger, etc.); `QuantLaws` and `strategy_selector` read from settings. **A-P5-03**: RSI gate (Short Put only if RSI < rsi_entry_threshold) and annualized yield gate (yield > min_yield_pct) in `analysis.py`. **A-P5-04**: Watchman triggers `ROLL_NEEDED` when (Price−Strike)/Strike ≥ roll_itm_pct and DTE < roll_dte_trigger; idempotent via AlertLog. **A-P5-05**: `entry_data.capital_deployed` and `entry_data.sector` on approve; `sector_value_exposure_allowed()` in `universe.py`; gate in analyze and batch.
+
+### Phase 5: Local Dev & Debugging (Immediate)
+*Focus: Ensuring the "Math" is correct, the loops don't die silently, and the data is trustworthy during your local testing.*
+
+| ID | Title | Acceptance Criteria (Pass/Fail) | Owners | Status |
+|---|---|---|---|---|
+| **A-FIX-10** | **Robust Watchman Scheduler** | Replace `asyncio.create_task` loop in `main.py` with a robust scheduler (e.g., `APScheduler`) that handles exceptions, logs failures, and prevents the "Zombie Loop" scenario where monitoring dies silently. | Arch | ✅ Completed |
+| **A-FIX-11** | **Remove Silent Mock Fallbacks** | Search for `NotImplementedError` catch blocks (e.g., `watchman.py`) that return hardcoded values (like `$3.40`). Logic must raise explicit `DataFetchError` alerts instead of failing open with fake data. | Dev | ✅ Completed |
+| **A-FIX-12** | **Price Slippage & Bid/Ask Logic** | Update `options.py`: Use **Bid Price** for Credit estimation (selling) and **Ask Price** for Buy-to-Close costs. Remove `(Bid+Ask)/2` mid-price usage to reflect realistic liquidity costs. | Trader | ✅ Completed |
+| **A-FIX-13** | **Recommendation Idempotency** | Modify `POST /analyze/{ticker}`: Query DB for existing `PENDING` recommendations for the same Ticker/Strategy/Expiry. Return existing ID instead of creating duplicates. | Dev | ✅ Completed |
+| **A-FIX-14** | **JSON Serialization Precision** | Middleware/Serializer update: Ensure `Decimal` types are serialized as **Strings** (e.g., `"10.50"`) in JSON responses, not Floats, to prevent IEEE 754 precision loss at the Frontend. | Dev | ✅ Completed |
+
+**Phase 5 implementation**: **A-FIX-10**: Watchman runs via `AsyncIOScheduler` (APScheduler), 15‑min interval, first run after 60s; exceptions logged, `DataFetchError` handled without crashing. **A-FIX-11**: `get_mark_price_for_position` raises `DataFetchError` on `NotImplementedError`; cycle skips position on `DataFetchError`. **A-FIX-12**: `analysis.py` uses `bid` for `credit_est`, `ask` for `buy_to_close_est`. **A-FIX-13**: `POST /analyze/{ticker}` checks for existing PENDING (ticker, strategy, expiry), returns `existing_recommendation_id` when found. **A-FIX-14**: `DecimalJSONResponse` as default response class; Decimals serialized as strings.
+
+### Phase 6: Institutional Mechanics (Hedge Fund Upgrades)
+**Purpose**: Elevate the bot from "Smart Retail" to "Institutional" by solving for Term Structure accuracy and Skew risk (Trap Doors).
+
+| ID | Title | Acceptance Criteria (Pass/Fail) | Owners | Status |
+|---|---|---|---|---|
+| **A-P7-01** | **Term Structure Interpolation** | **Logic Update**: Stop using generic `IV_30d` for execution logic. <br> **Requirement**: When a candidate option is selected (e.g., 43 DTE), the system must interpolate the Implied Volatility for that *exact* DTE using the volatility surface (or nearest expirations). <br> **Validation**: The `IV/NATR` calculation must use `IV_Target_Expiry`, not `IV_30d`. | Quant | ✅ Completed |
+| **A-P7-02** | **Volatility Skew Gate** | **New Metric**: Calculate the "25-Delta Skew" for the target expiration. <br> **Formula**: `Skew = IV(Put_25Δ) - IV(Call_25Δ)`. <br> **Gate**: Block "Short Put" entry if `Skew > settings.MAX_SKEW_THRESHOLD` (e.g., Skew is >10 points or >1.5x Call IV), indicating the market is pricing in a "limit down" event. | Quant | ✅ Completed |
+
+**Phase 6 implementation**: **A-P7-01**: After strike selection, IV at target expiry is taken from selected option (`selected["iv"]`); IV/NATR re-checked with `IV_Target_Expiry`; failure returns NONE with "Term structure" thesis. **A-P7-02**: `get_skew_25d(chain, expiry)` in `options.py` computes Put_25Δ IV − Call_25Δ IV; Short Put blocked when \|skew\| > max_skew_threshold (points).
+
+### Phase 7: Pre-Production & GCP (Before Deploy)
+*Focus: Transforming the app from a "local script" into a "cloud-native service" that is secure, scalable, and observable.*
+
+| ID | Title | Acceptance Criteria (Pass/Fail) | Owners | Status |
+|---|---|---|---|---|
+| **A-OPS-01** | **Redis Rate Limiter** | Replace in-memory `deque` limiter in `rate_limit.py` with a **Redis Token Bucket** pattern. Limits must be shared across multiple container replicas (essential for Cloud Run auto-scaling). | Arch | 🔴 Todo |
+| **A-OPS-02** | **API Authentication** | Implement `API Key` security header or Basic Auth for all `POST` endpoints. Reject unauthorized requests with `401 Unauthorized`. | Security | 🔴 Todo |
+| **A-OPS-03** | **External Secrets Management** | Remove hardcoded passwords in `docker-compose.yml`. Update `config.py` to enforce loading secrets (DB Pass, API Keys) strictly from Environment Variables. | Ops | 🔴 Todo |
+| **A-OPS-04** | **Structured Logging** | Replace `print()` statements with a JSON-structured logger (e.g., `structlog`). Logs must include `severity`, `timestamp`, and `correlation_id` for Cloud Logging ingestion. | Ops | 🔴 Todo |
+| **A-OPS-05** | **Dedicated Worker Service** | Refactor: Extract the `Watchman` loop from the API container into a separate `worker` entrypoint. `docker-compose` and Cloud Run must run API and Worker as distinct services. | Arch | 🔴 Todo |
+
 ---
 
 ## 6) Data Structures (Canonical)
@@ -229,7 +276,7 @@ This schema represents the "Source of Truth" for the Watchman service. It must b
 
 Note: lifecycle_stage allows values: PENDING_ENTRY, MONITORING, CLOSING_URGENT, CLOSED.
 
-## 7) Phase 4: Critical Fixes & Refinements (Spec Patch v1.1)
+## 7) Critical Fixes & Refinements (Spec Patch v1.1)
 
 **Status**: **APPROVED**
 **Date**: 2026-02-09
@@ -238,7 +285,7 @@ Note: lifecycle_stage allows values: PENDING_ENTRY, MONITORING, CLOSING_URGENT, 
 | ID | Title | Acceptance Criteria (Pass/Fail) | Owners | Status |
 |---|---|---|---|---|
 | **A-FIX-01** | **Fix IV/NATR Logic** | **Math Update**: Change formula to match timeframes. <br> New Formula: `Ratio = IV_30d / ((ATR_14 / Close * 100) * sqrt(252))`. <br> **Gate**: Pass only if `Ratio > 1.0`. | Trader | ✅ Completed |
-| **A-FIX-02** | **Refine Liquidity Gates** | **Stock**: Universe filter strictly `ADV > 5M`. <br> **Option**: Filter strictly `(Ask - Bid) / Bid_Price < 0.10` (Spread < 10%). | Trader | ✅ Completed |
+| **A-FIX-02** | **Refine Liquidity Gates** | **Stock**: Universe filter strictly `ADV > 5M`. <br> **Option**: Filter strictly `(Ask - Bid) / Bid_Price < 0.05` (Spread < 5%). | Trader | ✅ Completed |
 | **A-FIX-03** | **Hard Earnings Exclusion** | Check `Earnings Date`. Return `NO_TRADE` if earnings event occurs between `Today` and `Expiry Date`. | Trader | ✅ Completed |
 | **A-FIX-04** | **Ticker-Level Trend Filter** | Logic Update: In addition to SPY check, block Short Put if `Ticker_Price < Ticker_SMA_50_Daily`. | Trader | ✅ Completed |
 | **A-FIX-05** | **UI: Stale Thesis Warning** | Frontend Calculation: If `Live_Price < Rec_Price * 0.95` OR `Live_Credit < Rec_Credit * 0.90`, display **"THESIS STALE"** warning. | Frontend | ✅ Completed |
@@ -247,4 +294,4 @@ Note: lifecycle_stage allows values: PENDING_ENTRY, MONITORING, CLOSING_URGENT, 
 | **A-FIX-08** | **Abstract Data Provider** | Refactor Code: Create `MarketDataProvider` interface. Remove hardcoded `polygon` calls in core logic. | Arch | ✅ Completed |
 | **A-FIX-09** | **Decimal Precision Check** | Database Audit: Ensure all Price/Greek columns in Postgres are `DECIMAL(10, 4)` or higher. | Arch | ✅ Completed |
 
-**Implementation status (Spec Patch v1.1)**: All Phase 4 items are implemented in code. IV/NATR uses the updated formula with `sqrt(252)` and gate `> 1.0`. Liquidity: stock ADV > 5M, option spread `(Ask-Bid)/Bid < 10%`. Hard earnings exclusion returns `NO_TRADE` when earnings falls between today and expiry. Ticker-level filter blocks Short Put when `Price < SMA_50`. Frontend displays **THESIS STALE** when `live_price < rec_price*0.95` or `live_credit < rec_credit*0.90`. Watchman polls every 15 minutes during market hours (9:30–16:00 ET). `ActivePosition` has `parent_position_id`, `root_position_id`, `roll_count`, `realized_pnl_pre_roll`. Data access goes through `MarketDataProvider` (Mock/Polygon). All price and Greek columns use `Numeric(10,4)` or higher.
+**Implementation status (Spec Patch v1.1)**: All items are implemented in code. IV/NATR uses the updated formula with `sqrt(252)` and gate `> 1.0`. Liquidity: stock ADV > 5M, option spread `(Ask-Bid)/Bid < 10%`. Hard earnings exclusion returns `NO_TRADE` when earnings falls between today and expiry. Ticker-level filter blocks Short Put when `Price < SMA_50`. Frontend displays **THESIS STALE** when `live_price < rec_price*0.95` or `live_credit < rec_credit*0.90`. Watchman polls every 15 minutes during market hours (9:30–16:00 ET). `ActivePosition` has `parent_position_id`, `root_position_id`, `roll_count`, `realized_pnl_pre_roll`. Data access goes through `MarketDataProvider` (Mock/Polygon). All price and Greek columns use `Numeric(10,4)` or higher.

@@ -14,25 +14,34 @@ from app.quant_engine import QuantLaws
 
 
 # Mark price source: mock or from ingestion; > 60 min old → DATA_STALE
-DATA_STALE_MINUTES = 60
+# A-P5-02: DATA_STALE_MINUTES could be from config; A-FIX-11: no silent fallback — raise DataFetchError
+
+
+class DataFetchError(Exception):
+    """A-FIX-11: Raised when mark/quote cannot be fetched (e.g. provider not implemented). No fake data."""
+
+
+def _data_stale_minutes() -> int:
+    from app.config import settings
+    return getattr(settings, "data_stale_minutes", 60) or 60
 
 
 async def get_mark_price_for_position(ticker: str, *, mock: bool = True) -> tuple[Decimal, Decimal, datetime]:
     """
     Return (mark_price, underlying_price, fetched_at). A-P2-02 / A-P2-04: Smart Polling for Watchman.
-    When mock=False, uses MarketDataProvider.get_quote(ticker) when implemented; else fallback values.
+    A-FIX-11: Raises DataFetchError if quote not available (no silent mock fallback).
     """
     now = datetime.now(timezone.utc)
     if mock:
         return Decimal("3.40"), Decimal("175.50"), now
+    from app.config import settings
+    from app.services.providers import get_market_data_provider
+    provider = get_market_data_provider(mock=False, polygon_api_key=settings.polygon_api_key or "")
     try:
-        from app.config import settings
-        from app.services.providers import get_market_data_provider
-        provider = get_market_data_provider(mock=False, polygon_api_key=settings.polygon_api_key or "")
         underlying_price, option_mark = provider.get_quote(ticker)
         return option_mark, underlying_price, now
-    except NotImplementedError:
-        return Decimal("3.40"), Decimal("175.50"), now
+    except NotImplementedError as e:
+        raise DataFetchError(f"Quote not implemented for provider (ticker={ticker})") from e
 
 
 async def run_watchman_cycle(db: AsyncSession, *, mock: bool = True) -> list[dict[str, Any]]:
@@ -47,7 +56,11 @@ async def run_watchman_cycle(db: AsyncSession, *, mock: bool = True) -> list[dic
     triggered: list[dict[str, Any]] = []
 
     for pos in positions:
-        mark, underlying_price, fetched_at = await get_mark_price_for_position(pos.ticker, mock=mock)
+        try:
+            mark, underlying_price, fetched_at = await get_mark_price_for_position(pos.ticker, mock=mock)
+        except DataFetchError:
+            # A-FIX-11: Skip this position, do not use fake data; continue with others
+            continue
         entry = pos.entry_data or {}
         risk = pos.risk_rules or {}
         strike = Decimal(str(entry.get("short_strike", 0)))
@@ -56,7 +69,7 @@ async def run_watchman_cycle(db: AsyncSession, *, mock: bool = True) -> list[dic
         expiry_date = date.fromisoformat(expiry_date_str) if expiry_date_str else date.today()
 
         # Update last_heartbeat
-        data_fresh = (datetime.now(timezone.utc) - fetched_at).total_seconds() / 60 <= DATA_STALE_MINUTES
+        data_fresh = (datetime.now(timezone.utc) - fetched_at).total_seconds() / 60 <= _data_stale_minutes()
         pos.last_heartbeat = {
             "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "mark_price": float(mark),
@@ -70,9 +83,10 @@ async def run_watchman_cycle(db: AsyncSession, *, mock: bool = True) -> list[dic
                 triggered.append({"position_id": str(pos.id), "ticker": pos.ticker, "trigger": "STRIKE_TOUCH"})
             pos.lifecycle_stage = "CLOSING_URGENT"
 
-        # A-P2-03 21 DTE
+        # A-P2-03 21 DTE (threshold from config via QuantLaws)
         dte = (expiry_date - date.today()).days
-        if dte <= QuantLaws.DTE_ALERT_THRESHOLD:
+        from app.quant_engine import _get_dte_alert_threshold
+        if dte <= _get_dte_alert_threshold():
             if await _ensure_alert_sent(db, pos.id, "21_DTE"):
                 triggered.append({"position_id": str(pos.id), "ticker": pos.ticker, "trigger": "21_DTE"})
             pos.lifecycle_stage = "CLOSING_URGENT"
@@ -89,6 +103,16 @@ async def run_watchman_cycle(db: AsyncSession, *, mock: bool = True) -> list[dic
         if take_profit_price and mark <= take_profit_price:
             if await _ensure_alert_sent(db, pos.id, "TAKE_PROFIT"):
                 triggered.append({"position_id": str(pos.id), "ticker": pos.ticker, "trigger": "TAKE_PROFIT"})
+
+        # A-P5-04: Income Shield (Roll Logic) — ROLL_NEEDED if (Price-Strike)/Strike > roll_itm_pct AND DTE < roll_dte_trigger
+        from app.config import settings
+        roll_itm_pct = Decimal(str(getattr(settings, "roll_itm_pct", 0.03)))
+        roll_dte_trigger = getattr(settings, "roll_dte_trigger", 14)
+        if strike and strike > 0 and underlying_price > strike:
+            itm_ratio = (underlying_price - strike) / strike
+            if itm_ratio >= roll_itm_pct and dte < roll_dte_trigger:
+                if await _ensure_alert_sent(db, pos.id, "ROLL_NEEDED"):
+                    triggered.append({"position_id": str(pos.id), "ticker": pos.ticker, "trigger": "ROLL_NEEDED"})
 
         # A-P2-07 Data freshness
         if not data_fresh:

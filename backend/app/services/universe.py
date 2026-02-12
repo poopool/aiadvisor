@@ -73,3 +73,37 @@ def sector_cap_check(active_tickers_by_sector: dict[str, list[str]], sector: str
     """
     count = len(active_tickers_by_sector.get(sector, []))
     return count < max_per_sector
+
+
+async def sector_value_exposure_allowed(
+    db,  # AsyncSession
+    sector: str,
+    new_capital: float,
+    max_sector_allocation_pct: float = 0.70,
+) -> bool:
+    """
+    A-P5-05: Gate — block trade if Sum(Capital) in sector would exceed max_sector_allocation_pct of total.
+    Returns True if adding this trade is allowed; False if it would exceed sector allocation.
+    """
+    from sqlalchemy import select
+    from database.models import ActivePosition
+
+    result = await db.execute(
+        select(ActivePosition).where(ActivePosition.lifecycle_stage != "CLOSED")
+    )
+    positions = result.scalars().all()
+    total_capital = 0.0
+    sector_capital: dict[str, float] = {}
+    for p in positions:
+        entry = p.entry_data or {}
+        cap = float(entry.get("capital_deployed") or 0.0)
+        total_capital += cap
+        sec = entry.get("sector") or "Unknown"
+        sector_capital[sec] = sector_capital.get(sec, 0.0) + cap
+    current_sector = sector_capital.get(sector, 0.0)
+    new_total = total_capital + new_capital
+    if new_total <= 0:
+        return True
+    new_sector_total = current_sector + new_capital
+    share = new_sector_total / new_total
+    return share <= max_sector_allocation_pct

@@ -13,10 +13,13 @@ if _repo_root.exists() and str(_repo_root) not in sys.path:
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
+import json
 
+from decimal import Decimal
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text, select
+from fastapi.responses import JSONResponse
+from sqlalchemy import and_, text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -29,10 +32,23 @@ from app.services.ingestion import fetch_market_data, persist_market_data
 from database.session import get_engine, get_session_factory, init_db
 from database.models import TradeRecommendation, ActivePosition
 
+# A-FIX-14: JSON serialization — Decimal as string to prevent IEEE 754 precision loss
+def _decimal_serializer(obj):
+    if isinstance(obj, Decimal):
+        return str(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+class DecimalJSONResponse(JSONResponse):
+    def render(self, content) -> bytes:
+        return json.dumps(content, default=_decimal_serializer, ensure_ascii=False).encode("utf-8")
+
+
 app = FastAPI(
     title="AI Advisor Bot API",
     description="Options analytics engine — Phase 0 & 1",
     version="0.1.0",
+    default_response_class=DecimalJSONResponse,
 )
 
 app.add_middleware(
@@ -71,12 +87,6 @@ async def get_db() -> AsyncSession:
             raise
 
 
-@app.on_event("startup")
-async def startup():
-    await init_db(_get_engine())
-    asyncio.create_task(_watchman_loop())
-
-
 def _post_json_to_webhook(url: str, payload: dict) -> None:
     """A-P2-08: POST JSON to webhook (sync, run in thread). Swallows errors."""
     import json
@@ -90,39 +100,70 @@ def _post_json_to_webhook(url: str, payload: dict) -> None:
         )
         urllib.request.urlopen(req, timeout=10)
     except Exception:
-        pass  # delivery best-effort; avoid crashing Watchman loop
+        pass  # delivery best-effort; avoid crashing Watchman
 
 
-async def _watchman_loop():
-    """A-P2-02 / A-FIX-06: Poll ActivePositions every 15 min during market hours, else hourly; heartbeat every 4h. A-P2-08: Send alerts/heartbeat to webhooks when configured."""
+# A-FIX-10: Robust Watchman Scheduler — APScheduler; handles exceptions, logs failures, no zombie loop
+_watchman_scheduler = None
+_last_heartbeat_time: float = 0.0
+
+
+async def _watchman_job():
+    """Single Watchman cycle + optional 4h heartbeat. Exceptions logged and re-raised so scheduler can retry."""
+    import time
+    global _last_heartbeat_time
+    from app.watchman import DataFetchError
     from app.market_hours import is_market_hours
-    await asyncio.sleep(60)  # let API settle
     session_factory = _get_session_factory()
-    heartbeat_interval = 4 * 3600  # 4 hours
-    interval_market = 15 * 60   # 15 minutes during market hours
-    interval_off = 3600         # 1 hour outside market hours
-    last_heartbeat = 0.0
-    while True:
-        try:
-            async with session_factory() as session:
-                triggered = await run_watchman_cycle(session, mock=settings.ingestion_mock_mode)
-                await session.commit()
-                if triggered and getattr(settings, "alert_webhook_url", ""):
-                    await asyncio.to_thread(
-                        _post_json_to_webhook,
-                        settings.alert_webhook_url,
-                        {"alerts": triggered, "source": "watchman"},
-                    )
-        except Exception:
-            pass  # log and continue
-        cycle_interval = interval_market if is_market_hours() else interval_off
-        await asyncio.sleep(cycle_interval)
-        last_heartbeat += cycle_interval
-        if last_heartbeat >= heartbeat_interval:
-            last_heartbeat = 0.0
-            msg = get_heartbeat_message()
-            if getattr(settings, "heartbeat_webhook_url", ""):
-                await asyncio.to_thread(_post_json_to_webhook, settings.heartbeat_webhook_url, msg)
+    try:
+        async with session_factory() as session:
+            triggered = await run_watchman_cycle(session, mock=settings.ingestion_mock_mode)
+            await session.commit()
+            if triggered and getattr(settings, "alert_webhook_url", ""):
+                await asyncio.to_thread(
+                    _post_json_to_webhook,
+                    settings.alert_webhook_url,
+                    {"alerts": triggered, "source": "watchman"},
+                )
+    except DataFetchError as e:
+        # A-FIX-11: Explicit data fetch failure — log, do not fail open
+        import logging
+        logging.getLogger("watchman").warning("Watchman cycle data fetch failed: %s", e)
+    except Exception as e:
+        import logging
+        logging.getLogger("watchman").exception("Watchman cycle failed: %s", e)
+        raise  # let scheduler see failure
+
+    now = time.monotonic()
+    if now - _last_heartbeat_time >= 4 * 3600:
+        _last_heartbeat_time = now
+        if getattr(settings, "heartbeat_webhook_url", ""):
+            await asyncio.to_thread(_post_json_to_webhook, settings.heartbeat_webhook_url, get_heartbeat_message())
+
+
+def _schedule_watchman():
+    """A-FIX-10: Start APScheduler with Watchman job (15 min). Handles exceptions, logs failures, no zombie loop."""
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+    global _watchman_scheduler
+    _watchman_scheduler = AsyncIOScheduler()
+    # AsyncIOScheduler will call _watchman_job() and await the coroutine
+    _watchman_scheduler.add_job(
+        _watchman_job,
+        "interval",
+        minutes=15,
+        id="watchman_cycle",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=60),
+    )
+    _watchman_scheduler.start()
+
+
+@app.on_event("startup")
+async def startup():
+    await init_db(_get_engine())
+    _schedule_watchman()
 
 
 @app.get("/health")
@@ -150,6 +191,7 @@ async def analyze(
     Run the analysis pipeline for a single ticker.
     Fetches market data, persists to Data Layer (§2.2), then runs analysis.
     Returns the Trade Recommendation schema (§6.1).
+    A-FIX-13: Idempotent — returns existing PENDING rec if same Ticker/Strategy/Expiry exists.
     """
     if not ticker or not ticker.strip():
         raise HTTPException(status_code=400, detail="ticker is required")
@@ -165,6 +207,63 @@ async def analyze(
     # A-FIX-03: NO_TRADE (e.g. earnings) — do not persist; also skip Strategy=NONE (failed gates)
     if result.get("no_trade") or rec_payload is None or rec_payload.get("strategy") == "NONE":
         return result
+
+    # A-P5-01: Macro calendar gate — block new entries if high-impact event within lookahead
+    from app.services.macro_calendar import macro_event_gate_blocked, get_macro_calendar_provider
+    if macro_event_gate_blocked(
+        settings.macro_lookahead_hours,
+        get_macro_calendar_provider(mock=mock, api_key=getattr(settings, "trading_economics_api_key", "") or ""),
+    ):
+        return {
+            "ticker": result["ticker"],
+            "timestamp": result["timestamp"],
+            "regime": result["regime"],
+            "no_trade": True,
+            "reason": "NO_TRADE: High-impact macro event within lookahead window.",
+            "analysis": result.get("analysis", {}),
+            "recommendation": None,
+        }
+
+    # A-FIX-13: Recommendation idempotency — return existing PENDING if same Ticker/Strategy/Expiry
+    existing = await db.execute(
+        select(TradeRecommendation).where(
+            and_(
+                TradeRecommendation.ticker == ticker,
+                TradeRecommendation.strategy == rec_payload["strategy"],
+                TradeRecommendation.expiry == date.fromisoformat(rec_payload["expiry"]),
+                TradeRecommendation.status == "PENDING",
+            )
+        ).order_by(TradeRecommendation.created_at.desc()).limit(1)
+    )
+    existing_rec = existing.scalar_one_or_none()
+    if existing_rec:
+        # Return existing recommendation payload (reconstruct from calculated_metrics)
+        metrics = existing_rec.calculated_metrics or {}
+        return {
+            "ticker": existing_rec.ticker,
+            "timestamp": metrics.get("timestamp", ""),
+            "regime": metrics.get("regime", ""),
+            "analysis": metrics.get("analysis", {}),
+            "recommendation": metrics.get("recommendation", {}),
+            "existing_recommendation_id": str(existing_rec.id),
+        }
+
+    # A-P5-05: Sector value exposure — block if sector would exceed MAX_SECTOR_ALLOCATION
+    sector = (result.get("analysis") or {}).get("sector") or "Unknown"
+    new_capital = float(rec_payload.get("strike", 0)) * 100 * 1  # strike * 100 * contracts
+    from app.services.universe import sector_value_exposure_allowed
+    if not await sector_value_exposure_allowed(
+        db, sector, new_capital, getattr(settings, "max_sector_allocation_pct", 0.70)
+    ):
+        return {
+            "ticker": result["ticker"],
+            "timestamp": result["timestamp"],
+            "regime": result["regime"],
+            "no_trade": True,
+            "reason": "NO_TRADE: Sector value exposure would exceed max allocation.",
+            "analysis": result.get("analysis", {}),
+            "recommendation": None,
+        }
 
     # Persist to TradeRecommendation for audit
     from database.models import TradeRecommendation
@@ -263,6 +362,10 @@ async def approve_recommendation(
     force_close = expiry_date - timedelta(days=21)
     if force_close < date.today():
         force_close = date.today()
+    # A-P5-05: Track capital_deployed and sector for sector value exposure
+    contracts = 1
+    capital_deployed = float(rec.strike) * 100 * contracts
+    sector = (rec_analysis.get("sector") or "Unknown")
     position = ActivePosition(
         id=uuid4(),
         ticker=rec.ticker,
@@ -274,7 +377,9 @@ async def approve_recommendation(
             "expiry_date": expiry_date.isoformat(),
             "entry_price": float(entry_price),
             "entry_timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "contracts": 1,
+            "contracts": contracts,
+            "capital_deployed": capital_deployed,
+            "sector": sector,
         },
         risk_rules={
             "stop_loss_price": float(stop_loss),
@@ -340,11 +445,26 @@ async def heartbeat():
 async def analyze_batch(
     db: AsyncSession = Depends(get_db),
 ):
-    """A-P3-03: Run analysis on liquid universe (S&P 500, rate-limited). Returns list of §6.1 recommendations."""
+    """A-P3-03: Run analysis on liquid universe (S&P 500, rate-limited). Returns list of §6.1 recommendations. A-P5-01: Macro gate applied."""
+    from app.services.macro_calendar import macro_event_gate_blocked, get_macro_calendar_provider
+    from app.services.universe import sector_value_exposure_allowed
+
+    if macro_event_gate_blocked(
+        settings.macro_lookahead_hours,
+        get_macro_calendar_provider(mock=settings.ingestion_mock_mode, api_key=getattr(settings, "trading_economics_api_key", "") or ""),
+    ):
+        return {"blocked": True, "reason": "High-impact macro event within lookahead.", "results": []}
+
     results = await run_batch_analysis(mock_ingestion=settings.ingestion_mock_mode, max_tickers=10)
     for rec in results:
-        from database.models import TradeRecommendation
         r = rec.get("recommendation") or {}
+        if not r or r.get("strategy") == "NONE":
+            continue
+        sector = (rec.get("analysis") or {}).get("sector") or "Unknown"
+        new_capital = float(r.get("strike", 0)) * 100 * 1
+        if not await sector_value_exposure_allowed(db, sector, new_capital, getattr(settings, "max_sector_allocation_pct", 0.70)):
+            continue
+        from database.models import TradeRecommendation
         rec_row = TradeRecommendation(
             id=uuid4(),
             ticker=rec["ticker"],
