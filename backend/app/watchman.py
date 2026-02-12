@@ -77,8 +77,13 @@ async def run_watchman_cycle(db: AsyncSession, *, mock: bool = True) -> list[dic
             "data_freshness_status": "OK" if data_fresh else "STALE",
         }
 
-        # A-P2-04 Strike Touch: underlying <= short strike
-        if underlying_price <= strike:
+        # A-P2-04 Strike Touch: underlying price crosses the short strike
+        strategy = entry.get("strategy")
+        if strategy == "SHORT_PUT" and underlying_price <= strike:
+            if await _ensure_alert_sent(db, pos.id, "STRIKE_TOUCH"):
+                triggered.append({"position_id": str(pos.id), "ticker": pos.ticker, "trigger": "STRIKE_TOUCH"})
+            pos.lifecycle_stage = "CLOSING_URGENT"
+        elif strategy == "SHORT_CALL" and underlying_price >= strike:
             if await _ensure_alert_sent(db, pos.id, "STRIKE_TOUCH"):
                 triggered.append({"position_id": str(pos.id), "ticker": pos.ticker, "trigger": "STRIKE_TOUCH"})
             pos.lifecycle_stage = "CLOSING_URGENT"

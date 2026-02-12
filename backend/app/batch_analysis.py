@@ -11,16 +11,16 @@ from app.services.rate_limit import get_rate_limiter, with_rate_limit
 
 
 async def run_batch_analysis(
+    db: Any,
     *,
     mock_ingestion: bool = True,
     max_tickers: int | None = 20,
 ) -> list[dict[str, Any]]:
     """
     A-P3-03: Run analysis on all liquid tickers from universe.
-    Uses rate limiter (A-P3-06), liquidity filter (A-P3-02), earnings filter (A-P3-04), sector cap (A-P3-05).
+    Uses rate limiter (A-P3-06), earnings filter (A-P3-04), sector cap (A-P3-05).
     """
     tickers = load_sp500_universe(mock=mock_ingestion)
-    tickers = liquidity_filter(tickers)
     if max_tickers:
         tickers = tickers[:max_tickers]
 
@@ -29,13 +29,13 @@ async def run_batch_analysis(
     active_by_sector: dict[str, list[str]] = {}
 
     for ticker in tickers:
-        def _make_coro(t: str):
+        def _make_coro(t: str, db_session: Any):
             async def _run():
-                return await asyncio.to_thread(run_analysis, t, mock_ingestion=mock_ingestion)
+                return await asyncio.to_thread(run_analysis, t, db_session, mock_ingestion=mock_ingestion)
             return _run
 
         try:
-            rec = await with_rate_limit(_make_coro(ticker), limiter=limiter)
+            rec = await with_rate_limit(_make_coro(ticker, db), limiter=limiter)
             if not rec or rec.get("no_trade") or rec.get("recommendation") is None:
                 continue
             sector = (rec.get("analysis") or {}).get("sector") or "Unknown"

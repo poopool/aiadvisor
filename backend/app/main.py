@@ -201,7 +201,7 @@ async def analyze(
     # §2.2: Fetch then persist to Data Layer before analysis
     market_data = fetch_market_data(ticker, mock=mock)
     await persist_market_data(db, ticker, market_data["latest"])
-    result = run_analysis(ticker, mock_ingestion=mock, use_llm=use_llm, market_data_result=market_data)
+    result = run_analysis(ticker, db, mock_ingestion=mock, use_llm=use_llm, market_data_result=market_data)
 
     rec_payload = result.get("recommendation")
     # A-FIX-03: NO_TRADE (e.g. earnings) — do not persist; also skip Strategy=NONE (failed gates)
@@ -455,7 +455,7 @@ async def analyze_batch(
     ):
         return {"blocked": True, "reason": "High-impact macro event within lookahead.", "results": []}
 
-    results = await run_batch_analysis(mock_ingestion=settings.ingestion_mock_mode, max_tickers=10)
+    results = await run_batch_analysis(db, mock_ingestion=settings.ingestion_mock_mode, max_tickers=10)
     for rec in results:
         r = rec.get("recommendation") or {}
         if not r or r.get("strategy") == "NONE":

@@ -34,9 +34,28 @@ class TradingEconomicsMacroCalendarProvider(MacroCalendarProvider):
     def get_high_impact_events(self, within_hours: int = 48) -> list[dict[str, Any]]:
         if not self._api_key:
             return []
-        # Optional: requests.get(f"https://api.tradingeconomics.com/calendar?c={self._api_key}&importance=3")
-        # For now, no external call to avoid new dependency; implement when key is set.
-        return []
+        
+        import requests
+        from datetime import datetime, timezone
+
+        try:
+            url = f"https://api.tradingeconomics.com/calendar?c={self._api_key}&importance=3"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            events = response.json()
+            
+            formatted_events = []
+            for event in events:
+                dt_obj = datetime.fromisoformat(event['Date'].replace('Z', '+00:00'))
+                formatted_events.append({
+                    "start_time": dt_obj,
+                    "name": event.get("Event"),
+                    "importance": event.get("Importance"),
+                })
+            return formatted_events
+        except Exception as e:
+            print(f"Could not fetch macro events: {e}")
+            return []
 
 
 def get_macro_calendar_provider(mock: bool = True, api_key: str = "") -> MacroCalendarProvider:

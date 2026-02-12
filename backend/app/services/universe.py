@@ -20,8 +20,24 @@ def _mock_sp500() -> list[str]:
 
 
 def _fetch_sp500_constituents() -> list[str]:
-    """Fetch from Wikipedia or data provider."""
-    raise NotImplementedError("S&P 500 fetch not implemented. Use mock=True.")
+    """Fetch from Wikipedia."""
+    import requests
+    from bs4 import BeautifulSoup
+
+    try:
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        table = soup.find("table", {"id": "constituents"})
+        tickers = []
+        for row in table.find_all("tr")[1:]:
+            ticker = row.find_all("td")[0].text.strip()
+            tickers.append(ticker)
+        return tickers
+    except Exception as e:
+        print(f"Could not fetch S&P 500 constituents: {e}")
+        return []
 
 
 def liquidity_filter(tickers: list[str], universe_metrics: dict[str, Any] | None = None) -> list[str]:
