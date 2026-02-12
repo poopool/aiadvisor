@@ -40,6 +40,10 @@ services:
       DATABASE_URL: postgresql+asyncpg://aiadvisor:aiadvisor_dev@postgres:5432/aiadvisor
       REDIS_URL: redis://redis:6379/0
       PYTHONPATH: /app
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      POLYGON_API_KEY: ${POLYGON_API_KEY}
+      INGESTION_MOCK_MODE: ${INGESTION_MOCK_MODE}
+      USE_LLM: ${USE_LLM} 
     ports:
       - "8000:8000"
     volumes:
@@ -56,6 +60,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
     container_name: aiadvisor-frontend
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8000

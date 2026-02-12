@@ -114,47 +114,53 @@ The system follows a containerized, 3-tier microservices architecture designed f
 ## 5) Phased Roadmap & Backlog
 
 ### Phase 0: Infrastructure & Core (New)
-| ID | Title | Acceptance Criteria (Pass/Fail) | Owners |
-|---|---|---|---|
-| **A-P0-01** | **Container Strategy** | Create `Dockerfile` for API and Frontend; `docker-compose.yml` for local stack including DB. | Arch |
-| **A-P0-02** | **Database Schema** | Define SQL Schema for `Trades`, `Positions`, and `MarketData` tables. | Arch |
-| **A-P0-03** | **API Skeleton** | Setup FastAPI/Flask boilerplate with Health Check endpoint connecting to DB. | Arch |
+| ID | Title | Acceptance Criteria (Pass/Fail) | Owners | Status |
+|---|---|---|---|---|
+| **A-P0-01** | **Container Strategy** | Create `Dockerfile` for API and Frontend; `docker-compose.yml` for local stack including DB. | Arch | ✅ Completed |
+| **A-P0-02** | **Database Schema** | Define SQL Schema for `Trades`, `Positions`, and `MarketData` tables. | Arch | ✅ Completed |
+| **A-P0-03** | **API Skeleton** | Setup FastAPI/Flask boilerplate with Health Check endpoint connecting to DB. | Arch | ✅ Completed |
+
+**Phase 0 implementation**: All items implemented. Dockerfiles for API and Frontend; `docker-compose.yml` with API, Frontend, and PostgreSQL; Alembic migrations for `market_data`, `trade_recommendations`, `active_positions`, `alert_log`; FastAPI with `GET /health` connected to DB.
 
 ### Phase 1: The Core Analyst (Input -> Analysis -> Recommendation)
-| ID | Title | Acceptance Criteria (Pass/Fail) | Owners |
-|---|---|---|---|
-| **A-P1-01** | Ingestion & Technical Pipeline | Input: List of Tickers. Output: JSON Object with Price, SMA_50, RSI_14, ATR_14, IV_30d. | Arch, Trader |
-| **A-P1-02** | Volatility Logic Gate | Implement `IV/NATR` calculation. | Trader |
-| **A-P1-03** | Option Chain Fetcher | Fetch option chain for a ticker. Filter for specific expirations (30-45 DTE). | Arch |
-| **A-P1-04** | Strategy Selector (The Brain) | Logic to map Technical State to Option Strategy. | Trader |
-| **A-P1-05** | Strike Selection Engine | Select specific strikes based on Delta (~0.20-0.30 Delta). | Trader |
-| **A-P1-06** | LLM Synthesis Layer | Feed Technicals + Option Candidate + News to LLM for Thesis generation. | Arch |
-| **A-P1-07** | **Market Regime Filter** | System checks SPY 200-day SMA; blocks Short Put trades in bear regimes. | Trader |
-| **A-P1-08** | **Expected Move Engine** | Calculates 1-SD move for the target expiry; ensures strike is outside this range. | Trader |
-| **A-P1-09** | **Frontend: Approval Queue** | UI Table displaying `PENDING` recommendations. Actions: "Approve" (moves to Monitor) or "Reject". | Frontend |
+| ID | Title | Acceptance Criteria (Pass/Fail) | Owners | Status |
+|---|---|---|---|---|
+| **A-P1-01** | Ingestion & Technical Pipeline | Input: List of Tickers. Output: JSON Object with Price, SMA_50, RSI_14, ATR_14, IV_30d. | Arch, Trader | ✅ Completed |
+| **A-P1-02** | Volatility Logic Gate | Implement `IV/NATR` calculation. | Trader | ✅ Completed |
+| **A-P1-03** | Option Chain Fetcher | Fetch option chain for a ticker. Filter for specific expirations (30-45 DTE). | Arch | ✅ Completed |
+| **A-P1-04** | Strategy Selector (The Brain) | Logic to map Technical State to Option Strategy. | Trader | ✅ Completed |
+| **A-P1-05** | Strike Selection Engine | Select specific strikes based on Delta (~0.20-0.30 Delta). | Trader | ✅ Completed |
+| **A-P1-06** | LLM Synthesis Layer | Feed Technicals + Option Candidate + News to LLM for Thesis generation. | Arch | ✅ Completed |
+| **A-P1-07** | **Market Regime Filter** | System checks SPY 200-day SMA; blocks Short Put trades in bear regimes. | Trader | ✅ Completed |
+| **A-P1-08** | **Expected Move Engine** | Calculates 1-SD move for the target expiry; ensures strike is outside this range. | Trader | ✅ Completed |
+| **A-P1-09** | **Frontend: Approval Queue** | UI Table displaying `PENDING` recommendations. Actions: "Approve" (moves to Monitor) or "Reject". | Frontend | ✅ Completed |
+
+**Phase 1 implementation**: All items implemented. Ingestion returns Price, SMA_50, SMA_200, RSI_14, ATR_14, IV_30d and **persists to the Data Layer** on each `POST /analyze/{ticker}` (§2.2). Option chain is **filtered to 30–45 DTE** (A-P1-03). Analysis accepts optional pre-fetched `market_data_result` so the API can fetch once, persist, then run the pipeline. IV/NATR, Expected Move, Regime filter, Strategy selector, Strike selection, LLM synthesis, and Frontend Approval Queue are in place.
 
 ### Phase 2: The Watchman (Active Position Monitoring)
-| ID | Title | Acceptance Criteria (Pass/Fail) | Owners |
-|---|---|---|---|
-| **A-P2-01** | Portfolio State Store | Persistent store tracking "Active Positions" (Ticker, Strike, Entry Price). | Arch |
-| **A-P2-02** | Market Data Poller | Scheduler (e.g., hourly) that updates Current Price and Mark Price via Smart Polling. | Arch |
-| **A-P2-03** | "21 DTE" Rule Monitor | Check `Expiry - Today`. If `<= 21 days`, trigger ALERT. | Trader |
-| **A-P2-04** | "Strike Touch" Monitor | Check `Current Stock Price` vs `Short Strike`. Trigger ALERT on touch. | Trader |
-| **A-P2-05** | Stop Loss Monitor (3x Credit) | Check `Mark >= 3.0 * Entry`. Trigger ALERT. | Trader |
-| **A-P2-06** | **Take Profit Monitor** | Trigger ALERT if `Current Mark <= 0.5 * Entry Credit`. | Trader |
-| **A-P2-07** | **Alert Idempotency** | Prevents alert spam; tracks `ALERT_SENT` state for specific triggers. | Arch |
-| **A-P2-08** | **System Heartbeat** | Sends a "System Online" heartbeat to the human every 4 hours. Checks Data Freshness. | Arch |
-| **A-P2-09** | **Frontend: Watchtower** | UI Dashboard showing `ActivePositions`. Visual indicators (Red/Green) for Stop Loss or Profit targets. | Frontend |
+| ID | Title | Acceptance Criteria (Pass/Fail) | Owners | Status |
+|---|---|---|---|---|
+| **A-P2-01** | Portfolio State Store | Persistent store tracking "Active Positions" (Ticker, Strike, Entry Price). | Arch | ✅ Completed |
+| **A-P2-02** | Market Data Poller | Scheduler (e.g., hourly) that updates Current Price and Mark Price via Smart Polling. | Arch | ✅ Completed |
+| **A-P2-03** | "21 DTE" Rule Monitor | Check `Expiry - Today`. If `<= 21 days`, trigger ALERT. | Trader | ✅ Completed |
+| **A-P2-04** | "Strike Touch" Monitor | Check `Current Stock Price` vs `Short Strike`. Trigger ALERT on touch. | Trader | ✅ Completed |
+| **A-P2-05** | Stop Loss Monitor (3x Credit) | Check `Mark >= 3.0 * Entry`. Trigger ALERT. | Trader | ✅ Completed |
+| **A-P2-06** | **Take Profit Monitor** | Trigger ALERT if `Current Mark <= 0.5 * Entry Credit`. | Trader | ✅ Completed |
+| **A-P2-07** | **Alert Idempotency** | Prevents alert spam; tracks `ALERT_SENT` state for specific triggers. | Arch | ✅ Completed |
+| **A-P2-08** | **System Heartbeat** | Sends a "System Online" heartbeat to the human every 4 hours. Checks Data Freshness. | Arch | ✅ Completed |
+| **A-P2-09** | **Frontend: Watchtower** | UI Dashboard showing `ActivePositions`. Visual indicators (Red/Green) for Stop Loss or Profit targets. | Frontend | ✅ Completed |
+
+**Phase 2 implementation**: All items implemented. **A-P2-01**: `active_positions` table and `/positions` API; approve flow creates position and sets risk_rules (stop 3×, take profit 0.5×). **A-P2-02**: Watchman loop polls every 15 min during market hours (A-FIX-06), else hourly; mark and underlying price come from `MarketDataProvider.get_quote(ticker)` when not mock (Mock provider implements `get_quote`; Polygon can implement or fallback). **A-P2-03–A-P2-06**: 21 DTE, strike touch, stop loss, take profit monitors in `watchman.run_watchman_cycle`; `last_heartbeat` updated with mark, underlying, and data freshness. **A-P2-07**: `AlertLog` and `_ensure_alert_sent` enforce idempotency per position/trigger. **A-P2-08**: Heartbeat message built and exposed at `/heartbeat`; when `HEARTBEAT_WEBHOOK_URL` or `ALERT_WEBHOOK_URL` are set, Watchman POSTs heartbeat (every 4h) and triggered alerts to those URLs. **A-P2-09**: Frontend Watchtower at `/watchtower` lists active positions with Red/Green for stop and take-profit, and CLOSING_URGENT row styling.
 
 ### Phase 3: The Hunter (Automated Scanning)
-| ID | Title | Acceptance Criteria (Pass/Fail) | Owners |
-|---|---|---|---|
-| **A-P3-01** | S&P 500 Universe Loader | Auto-fetch current S&P 500 constituents. | Arch |
-| **A-P3-02** | Liquidity Filter | Filter Universe for `ADV > 2M` and `Spread < 1.5%`. | Trader |
-| **A-P3-03** | Batch Analysis Runner | Run Phase 1 logic on all liquid tickers. | Arch |
-| **A-P3-04** | Macro/Event Filter | Check "Earnings Date". Exclude if Earnings is within trade duration. | Trader |
-| **A-P3-05** | **Sector Correlation Cap** | Prevents recommending more than 2 active trades in the same sector. | Trader |
-| **A-P3-06** | **Rate Limit Controller** | Implements a queuing system for API calls to prevent data provider throttling. | Arch |
+| ID | Title | Acceptance Criteria (Pass/Fail) | Owners | Status |
+|---|---|---|---|---|
+| **A-P3-01** | S&P 500 Universe Loader | Auto-fetch current S&P 500 constituents. | Arch | ✅ Completed |
+| **A-P3-02** | Liquidity Filter | Filter Universe for `ADV > 2M` and `Spread < 1.5%`. | Trader | ✅ Completed |
+| **A-P3-03** | Batch Analysis Runner | Run Phase 1 logic on all liquid tickers. | Arch | ✅ Completed |
+| **A-P3-04** | Macro/Event Filter | Check "Earnings Date". Exclude if Earnings is within trade duration. | Trader | ✅ Completed |
+| **A-P3-05** | **Sector Correlation Cap** | Prevents recommending more than 2 active trades in the same sector. | Trader | ✅ Completed |
+| **A-P3-06** | **Rate Limit Controller** | Implements a queuing system for API calls to prevent data provider throttling. | Arch | ✅ Completed |
 
 ---
 
@@ -229,16 +235,16 @@ Note: lifecycle_stage allows values: PENDING_ENTRY, MONITORING, CLOSING_URGENT, 
 **Date**: 2026-02-09
 **Purpose**: This backlog phase addresses high-priority logic errors, schema gaps, and risk management refinements identified during the architecture review.
 
-| ID | Title | Acceptance Criteria (Pass/Fail) | Owners |
-|---|---|---|---|
-| **A-FIX-01** | **Fix IV/NATR Logic** | **Math Update**: Change formula to match timeframes. <br> New Formula: `Ratio = IV_30d / ((ATR_14 / Close * 100) * sqrt(252))`. <br> **Gate**: Pass only if `Ratio > 1.0`. | Trader |
-| **A-FIX-02** | **Refine Liquidity Gates** | **Stock**: Universe filter strictly `ADV > 5M`. <br> **Option**: Filter strictly `(Ask - Bid) / Bid_Price < 0.10` (Spread < 10%). | Trader |
-| **A-FIX-03** | **Hard Earnings Exclusion** | Check `Earnings Date`. Return `NO_TRADE` if earnings event occurs between `Today` and `Expiry Date`. | Trader |
-| **A-FIX-04** | **Ticker-Level Trend Filter** | Logic Update: In addition to SPY check, block Short Put if `Ticker_Price < Ticker_SMA_50_Daily`. | Trader |
-| **A-FIX-05** | **UI: Stale Thesis Warning** | Frontend Calculation: If `Live_Price < Rec_Price * 0.95` OR `Live_Credit < Rec_Credit * 0.90`, display **"THESIS STALE"** warning. | Frontend |
-| **A-FIX-06** | **High-Freq Active Polling** | Update Watchman Scheduler: `ActivePositions` must be polled every **15 minutes** during market hours (vs hourly). | Arch |
-| **A-FIX-07** | **Schema: Rolling Lineage** | Update `ActivePositions` Table. Add columns: `parent_position_id` (UUID), `root_position_id` (UUID), `roll_count` (INT), `realized_pnl_pre_roll` (DECIMAL). | Arch |
-| **A-FIX-08** | **Abstract Data Provider** | Refactor Code: Create `MarketDataProvider` interface. Remove hardcoded `polygon` calls in core logic. | Arch |
-| **A-FIX-09** | **Decimal Precision Check** | Database Audit: Ensure all Price/Greek columns in Postgres are `DECIMAL(10, 4)` or higher. | Arch |
+| ID | Title | Acceptance Criteria (Pass/Fail) | Owners | Status |
+|---|---|---|---|---|
+| **A-FIX-01** | **Fix IV/NATR Logic** | **Math Update**: Change formula to match timeframes. <br> New Formula: `Ratio = IV_30d / ((ATR_14 / Close * 100) * sqrt(252))`. <br> **Gate**: Pass only if `Ratio > 1.0`. | Trader | ✅ Completed |
+| **A-FIX-02** | **Refine Liquidity Gates** | **Stock**: Universe filter strictly `ADV > 5M`. <br> **Option**: Filter strictly `(Ask - Bid) / Bid_Price < 0.10` (Spread < 10%). | Trader | ✅ Completed |
+| **A-FIX-03** | **Hard Earnings Exclusion** | Check `Earnings Date`. Return `NO_TRADE` if earnings event occurs between `Today` and `Expiry Date`. | Trader | ✅ Completed |
+| **A-FIX-04** | **Ticker-Level Trend Filter** | Logic Update: In addition to SPY check, block Short Put if `Ticker_Price < Ticker_SMA_50_Daily`. | Trader | ✅ Completed |
+| **A-FIX-05** | **UI: Stale Thesis Warning** | Frontend Calculation: If `Live_Price < Rec_Price * 0.95` OR `Live_Credit < Rec_Credit * 0.90`, display **"THESIS STALE"** warning. | Frontend | ✅ Completed |
+| **A-FIX-06** | **High-Freq Active Polling** | Update Watchman Scheduler: `ActivePositions` must be polled every **15 minutes** during market hours (vs hourly). | Arch | ✅ Completed |
+| **A-FIX-07** | **Schema: Rolling Lineage** | Update `ActivePositions` Table. Add columns: `parent_position_id` (UUID), `root_position_id` (UUID), `roll_count` (INT), `realized_pnl_pre_roll` (DECIMAL). | Arch | ✅ Completed |
+| **A-FIX-08** | **Abstract Data Provider** | Refactor Code: Create `MarketDataProvider` interface. Remove hardcoded `polygon` calls in core logic. | Arch | ✅ Completed |
+| **A-FIX-09** | **Decimal Precision Check** | Database Audit: Ensure all Price/Greek columns in Postgres are `DECIMAL(10, 4)` or higher. | Arch | ✅ Completed |
 
 **Implementation status (Spec Patch v1.1)**: All Phase 4 items are implemented in code. IV/NATR uses the updated formula with `sqrt(252)` and gate `> 1.0`. Liquidity: stock ADV > 5M, option spread `(Ask-Bid)/Bid < 10%`. Hard earnings exclusion returns `NO_TRADE` when earnings falls between today and expiry. Ticker-level filter blocks Short Put when `Price < SMA_50`. Frontend displays **THESIS STALE** when `live_price < rec_price*0.95` or `live_credit < rec_credit*0.90`. Watchman polls every 15 minutes during market hours (9:30–16:00 ET). `ActivePosition` has `parent_position_id`, `root_position_id`, `roll_count`, `realized_pnl_pre_roll`. Data access goes through `MarketDataProvider` (Mock/Polygon). All price and Greek columns use `Numeric(10,4)` or higher.

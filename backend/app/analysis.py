@@ -1,5 +1,5 @@
 # AI Advisor Bot — Analysis Pipeline (Phase 1)
-# A-P1-01 ingestion → A-P1-07 regime → A-P1-04 strategy → A-P1-03/05 chain/strike → A-P1-08 expected move → A-P1-06 thesis
+# A-P1-01 ingestion → A-P1-07 regime → A-P1-04 strategy → Efficiency Gate → contract (if not NONE) → thesis
 
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -16,12 +16,20 @@ from app.services.universe import hard_earnings_exclusion
 DEFAULT_DTE_MIN, DEFAULT_DTE_MAX = 30, 45
 
 
-def run_analysis(ticker: str, *, mock_ingestion: bool = True, use_llm: bool = False) -> dict[str, Any]:
+def run_analysis(
+    ticker: str,
+    *,
+    mock_ingestion: bool = True,
+    use_llm: bool = False,
+    market_data_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """
     Full pipeline. Returns Trade Recommendation schema (§6.1).
     Uses SMA_50/SMA_200 for trend, SPY for regime, chain for strike/delta/credit.
+    Efficiency Gate: SHORT_PUT only if IV/NATR > 1.0; otherwise strategy = NONE.
+    When market_data_result is provided (e.g. after fetch + persist), uses it instead of fetching.
     """
-    data = fetch_market_data(ticker, mock=mock_ingestion)
+    data = market_data_result if market_data_result is not None else fetch_market_data(ticker, mock=mock_ingestion)
     latest = data["latest"]
     price = latest["close"]
     sma_50 = latest.get("sma_50")
@@ -37,21 +45,49 @@ def run_analysis(ticker: str, *, mock_ingestion: bool = True, use_llm: bool = Fa
     trend = get_trend_state(price, sma_50, sma_200)
     rsi_state = get_rsi_state(rsi_14)
 
-    # A-P1-08 Expected move for target DTE
+    # 1) Calculate metrics: expected move, IV/NATR ratio, efficiency gate (Ratio > 1.0)
     dte = (DEFAULT_DTE_MIN + DEFAULT_DTE_MAX) // 2
     expected_move_1sd = QuantLaws.calculate_expected_move(price, iv_30d, dte)
     iv_natr_ratio, efficiency_passes = QuantLaws.check_iv_natr_rule(iv_30d, atr_14, price)
     dte_status = QuantLaws.check_21_dte(dte)
+
+    analysis_payload = {
+        "price": float(price),
+        "rsi_14": float(rsi_14),
+        "trend": trend,
+        "iv_rank": 65,
+        "iv_natr_ratio": float(iv_natr_ratio),
+        "expected_move_1sd": float(expected_move_1sd),
+        "earnings_date": None,
+    }
 
     # A-P1-04 Strategy (A-P1-07: no Short Put when SPY below 200 SMA)
     strategy = select_strategy(trend, rsi_state, allows_short_put)
     # A-FIX-04: Ticker-level trend filter — block Short Put if Ticker_Price < Ticker_SMA_50
     if strategy == "SHORT_PUT" and sma_50 is not None and price < sma_50:
         strategy = "NONE"
-    if strategy == "NONE":
-        strategy = "SHORT_CALL"  # or skip; avoid Short Put when regime blocks
+    # 2) Apply Efficiency Gate: IV/NATR > 1.0 required for Short Put; otherwise NONE
+    if strategy == "SHORT_PUT" and not efficiency_passes:
+        strategy = "NONE"
 
-    # A-P1-03 / A-P1-05 Option chain and strike selection
+    now = datetime.now(timezone.utc)
+    timestamp = now.isoformat().replace("+00:00", "Z")
+
+    # 3) Select contract only if strategy is valid (not NONE)
+    if strategy == "NONE":
+        recommendation_payload = {
+            "strategy": "NONE",
+            "thesis": "Vol check failed: IV/NATR ratio not above 1.0.",
+        }
+        return {
+            "ticker": ticker.upper(),
+            "timestamp": timestamp,
+            "regime": regime,
+            "analysis": analysis_payload,
+            "recommendation": recommendation_payload,
+        }
+
+    # Strategy is SHORT_PUT or SHORT_CALL — fetch chain and select strike
     chain = fetch_option_chain(ticker, mock=mock_ingestion)
     selected = select_strike_by_delta(chain, (0.20, 0.30))
 
@@ -73,32 +109,20 @@ def run_analysis(ticker: str, *, mock_ingestion: bool = True, use_llm: bool = Fa
         contract = f"{ticker.upper()}{expiry_date.strftime('%y%m%d')}P{int(strike * 1000):08d}"
 
     # A-FIX-03: Hard Earnings Exclusion — NO_TRADE if earnings between Today and Expiry
-    earnings_date = latest.get("earnings_date")  # date or None
+    earnings_date = latest.get("earnings_date")
     if hard_earnings_exclusion(earnings_date, expiry_date):
-        now = datetime.now(timezone.utc)
         return {
             "ticker": ticker.upper(),
-            "timestamp": now.isoformat().replace("+00:00", "Z"),
+            "timestamp": timestamp,
             "regime": regime,
             "no_trade": True,
             "reason": "NO_TRADE: Earnings event between today and expiry.",
-            "analysis": {"price": float(price), "rsi_14": float(rsi_14), "trend": trend, "earnings_date": earnings_date.isoformat() if hasattr(earnings_date, "isoformat") else earnings_date},
+            "analysis": {**analysis_payload, "earnings_date": earnings_date.isoformat() if hasattr(earnings_date, "isoformat") else earnings_date},
             "recommendation": None,
         }
 
-    # Safety: strike outside 1-SD
     safety_ok = strike < (price - expected_move_1sd)
     safety_check = "Strike is outside 1-SD expected move" if safety_ok else "Strike within 1-SD; review manually"
-
-    analysis_payload = {
-        "price": float(price),
-        "rsi_14": float(rsi_14),
-        "trend": trend,
-        "iv_rank": 65,
-        "iv_natr_ratio": float(iv_natr_ratio),
-        "expected_move_1sd": float(expected_move_1sd),
-        "earnings_date": None,
-    }
 
     recommendation_payload = {
         "strategy": strategy,
@@ -108,13 +132,19 @@ def run_analysis(ticker: str, *, mock_ingestion: bool = True, use_llm: bool = Fa
         "delta": delta,
         "credit_est": round(credit_est, 2),
         "safety_check": safety_check,
-        "thesis": synthesize_thesis(ticker, analysis_payload, recommendation_payload, use_llm=use_llm),
     }
 
-    now = datetime.now(timezone.utc)
+    # 4) Thesis generation at the very end
+    recommendation_payload["thesis"] = synthesize_thesis(
+        ticker,
+        analysis_payload,
+        recommendation_payload,
+        use_llm=use_llm,
+    )
+
     return {
         "ticker": ticker.upper(),
-        "timestamp": now.isoformat().replace("+00:00", "Z"),
+        "timestamp": timestamp,
         "regime": regime,
         "analysis": analysis_payload,
         "recommendation": recommendation_payload,

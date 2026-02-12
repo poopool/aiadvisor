@@ -1,9 +1,12 @@
 # AI Advisor Bot — LLM Synthesis Layer (A-P1-06)
-# Feeds technicals + option candidate to LLM for thesis generation. Stub + optional real.
+# Feeds technicals + option candidate to LLM for thesis generation. Stub or Google Gemini.
 
+import traceback
 from typing import Any
 
-# Set OPENAI_API_KEY or similar for real synthesis; otherwise stub.
+import google.generativeai as genai
+
+from app.config import settings
 
 
 def synthesize_thesis(
@@ -15,7 +18,7 @@ def synthesize_thesis(
 ) -> str:
     """
     A-P1-06: Generate narrative thesis from technicals + option candidate.
-    use_llm=True requires configured LLM API (e.g. OpenAI).
+    use_llm=True uses Google Gemini (requires GEMINI_API_KEY).
     """
     if use_llm:
         return _synthesize_via_llm(ticker, analysis, recommendation)
@@ -42,6 +45,27 @@ def _stub_thesis(ticker: str, analysis: dict[str, Any], recommendation: dict[str
 
 
 def _synthesize_via_llm(ticker: str, analysis: dict[str, Any], recommendation: dict[str, Any]) -> str:
-    """Call LLM API (OpenAI/Anthropic) with technicals + option; return thesis."""
-    # import openai; ...
-    raise NotImplementedError("LLM synthesis not configured. Set use_llm=False or configure OPENAI_API_KEY.")
+    """Call Google Gemini with technicals + option; return a concise trading thesis."""
+    fallback = _stub_thesis(ticker, analysis, recommendation)
+    if not settings.gemini_api_key:
+        return fallback
+    try:
+        genai.configure(api_key=settings.gemini_api_key)
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        prompt = (
+            "You are a professional options analyst. Based strictly on the following data, "
+            "write a concise, professional trading thesis (2–4 sentences) explaining why this Short Put "
+            "is a good idea. Use only the provided math and metrics; do not invent numbers.\n\n"
+            f"Ticker: {ticker}\n\n"
+            f"Analysis: {analysis}\n\n"
+            f"Recommendation: {recommendation}\n\n"
+            "Thesis:"
+        )
+        response = model.generate_content(prompt)
+        if response and response.text:
+            return response.text.strip()
+        return fallback
+    except Exception as e:
+        print(f"LLM CRASH: {e}", flush=True)
+        traceback.print_exc()
+        return fallback

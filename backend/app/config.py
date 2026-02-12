@@ -11,6 +11,12 @@ class Settings(BaseSettings):
     # Ingestion: set to True to use mock data (no API calls)
     ingestion_mock_mode: bool = True
     polygon_api_key: str = ""
+    gemini_api_key: str = ""
+    use_llm: bool = False
+
+    # A-P2-08: Optional webhooks to send alerts and heartbeat to the human
+    alert_webhook_url: str = ""
+    heartbeat_webhook_url: str = ""
 
     class Config:
         env_file = ".env"

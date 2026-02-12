@@ -15,6 +15,7 @@ from decimal import Decimal
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +23,7 @@ from app.config import settings
 from app.analysis import run_analysis
 from app.watchman import run_watchman_cycle, get_heartbeat_message
 from app.batch_analysis import run_batch_analysis
+from app.services.ingestion import fetch_market_data, persist_market_data
 
 # Database (import after path fix)
 from database.session import get_engine, get_session_factory, init_db
@@ -31,6 +33,14 @@ app = FastAPI(
     title="AI Advisor Bot API",
     description="Options analytics engine — Phase 0 & 1",
     version="0.1.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 _engine = None
@@ -67,8 +77,24 @@ async def startup():
     asyncio.create_task(_watchman_loop())
 
 
+def _post_json_to_webhook(url: str, payload: dict) -> None:
+    """A-P2-08: POST JSON to webhook (sync, run in thread). Swallows errors."""
+    import json
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=10)
+    except Exception:
+        pass  # delivery best-effort; avoid crashing Watchman loop
+
+
 async def _watchman_loop():
-    """A-P2-02 / A-FIX-06: Poll ActivePositions every 15 min during market hours, else hourly; heartbeat every 4h."""
+    """A-P2-02 / A-FIX-06: Poll ActivePositions every 15 min during market hours, else hourly; heartbeat every 4h. A-P2-08: Send alerts/heartbeat to webhooks when configured."""
     from app.market_hours import is_market_hours
     await asyncio.sleep(60)  # let API settle
     session_factory = _get_session_factory()
@@ -81,8 +107,12 @@ async def _watchman_loop():
             async with session_factory() as session:
                 triggered = await run_watchman_cycle(session, mock=settings.ingestion_mock_mode)
                 await session.commit()
-                if triggered:
-                    pass  # TODO: send to human (email/webhook)
+                if triggered and getattr(settings, "alert_webhook_url", ""):
+                    await asyncio.to_thread(
+                        _post_json_to_webhook,
+                        settings.alert_webhook_url,
+                        {"alerts": triggered, "source": "watchman"},
+                    )
         except Exception:
             pass  # log and continue
         cycle_interval = interval_market if is_market_hours() else interval_off
@@ -90,7 +120,9 @@ async def _watchman_loop():
         last_heartbeat += cycle_interval
         if last_heartbeat >= heartbeat_interval:
             last_heartbeat = 0.0
-            _ = get_heartbeat_message()  # TODO: send heartbeat to human
+            msg = get_heartbeat_message()
+            if getattr(settings, "heartbeat_webhook_url", ""):
+                await asyncio.to_thread(_post_json_to_webhook, settings.heartbeat_webhook_url, msg)
 
 
 @app.get("/health")
@@ -111,10 +143,12 @@ async def health(db: AsyncSession = Depends(get_db)):
 @app.post("/analyze/{ticker}")
 async def analyze(
     ticker: str,
+    use_llm: bool = Query(default=settings.use_llm),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Run the analysis pipeline for a single ticker.
+    Fetches market data, persists to Data Layer (§2.2), then runs analysis.
     Returns the Trade Recommendation schema (§6.1).
     """
     if not ticker or not ticker.strip():
@@ -122,10 +156,14 @@ async def analyze(
     ticker = ticker.strip().upper()
 
     mock = settings.ingestion_mock_mode
-    result = run_analysis(ticker, mock_ingestion=mock)
+    # §2.2: Fetch then persist to Data Layer before analysis
+    market_data = fetch_market_data(ticker, mock=mock)
+    await persist_market_data(db, ticker, market_data["latest"])
+    result = run_analysis(ticker, mock_ingestion=mock, use_llm=use_llm, market_data_result=market_data)
 
-    # A-FIX-03: NO_TRADE (e.g. earnings) — do not persist
-    if result.get("no_trade") or result.get("recommendation") is None:
+    rec_payload = result.get("recommendation")
+    # A-FIX-03: NO_TRADE (e.g. earnings) — do not persist; also skip Strategy=NONE (failed gates)
+    if result.get("no_trade") or rec_payload is None or rec_payload.get("strategy") == "NONE":
         return result
 
     # Persist to TradeRecommendation for audit
@@ -134,15 +172,15 @@ async def analyze(
     rec = TradeRecommendation(
         id=uuid4(),
         ticker=result["ticker"],
-        strategy=result["recommendation"]["strategy"],
-        strike=Decimal(str(result["recommendation"]["strike"])),
-        expiry=date.fromisoformat(result["recommendation"]["expiry"]),
+        strategy=rec_payload["strategy"],
+        strike=Decimal(str(rec_payload["strike"])),
+        expiry=date.fromisoformat(rec_payload["expiry"]),
         status="PENDING",
         calculated_metrics={
             "timestamp": result["timestamp"],
             "regime": result["regime"],
             "analysis": result["analysis"],
-            "recommendation": result["recommendation"],
+            "recommendation": rec_payload,
         },
     )
     db.add(rec)

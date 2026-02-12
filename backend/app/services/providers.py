@@ -44,7 +44,7 @@ class MockMarketDataProvider(MarketDataProvider):
                 "sma_200": sma_200,
                 "atr_14": Decimal("4.20"),
                 "rsi_14": Decimal("28.5"),
-                "iv_30d": Decimal("0.35"),
+                "iv_30d": Decimal("0.24"),  # 24% — realistic; Efficiency Gate (IV/NATR > 1.0) will filter in normal dev
             },
         }
 
@@ -60,6 +60,10 @@ class MockMarketDataProvider(MarketDataProvider):
                 {"strike": 150.0, "expiry": expiry.isoformat(), "delta": -0.18, "bid": 2.10, "ask": 2.30, "iv": 0.32},
             ],
         }
+
+    def get_quote(self, ticker: str) -> tuple[Decimal, Decimal]:
+        """A-P2-02: (underlying_price, option_mark) for Watchman mark/price polling."""
+        return Decimal("175.50"), Decimal("3.40")
 
 
 class PolygonMarketDataProvider(MarketDataProvider):

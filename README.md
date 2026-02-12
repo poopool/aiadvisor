@@ -81,3 +81,5 @@ PYTHONPATH=. alembic upgrade head
 - `DATABASE_URL` — PostgreSQL connection (async). Default: `postgresql+asyncpg://aiadvisor:aiadvisor_dev@localhost:5432/aiadvisor`
 - `INGESTION_MOCK_MODE` / `ingestion_mock_mode` — `true`: mock market/option data; `false`: use Polygon (implement in services when ready).
 - `NEXT_PUBLIC_API_URL` — Frontend: API base URL (default `http://localhost:8000` when using Docker).
+- `ALERT_WEBHOOK_URL` — (Optional) When set, Watchman POSTs triggered alerts (21 DTE, stop loss, take profit, strike touch, data stale) to this URL (A-P2-08).
+- `HEARTBEAT_WEBHOOK_URL` — (Optional) When set, Watchman POSTs the system heartbeat every 4 hours to this URL (A-P2-08).

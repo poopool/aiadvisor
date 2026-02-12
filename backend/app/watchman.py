@@ -18,11 +18,21 @@ DATA_STALE_MINUTES = 60
 
 
 async def get_mark_price_for_position(ticker: str, *, mock: bool = True) -> tuple[Decimal, Decimal, datetime]:
-    """Return (mark_price, underlying_price, fetched_at). A-P2-04 Strike Touch uses underlying_price."""
+    """
+    Return (mark_price, underlying_price, fetched_at). A-P2-02 / A-P2-04: Smart Polling for Watchman.
+    When mock=False, uses MarketDataProvider.get_quote(ticker) when implemented; else fallback values.
+    """
+    now = datetime.now(timezone.utc)
     if mock:
-        return Decimal("3.40"), Decimal("175.50"), datetime.now(timezone.utc)
-    # TODO: fetch from Polygon option quote + stock quote
-    return Decimal("3.40"), Decimal("175.50"), datetime.now(timezone.utc)
+        return Decimal("3.40"), Decimal("175.50"), now
+    try:
+        from app.config import settings
+        from app.services.providers import get_market_data_provider
+        provider = get_market_data_provider(mock=False, polygon_api_key=settings.polygon_api_key or "")
+        underlying_price, option_mark = provider.get_quote(ticker)
+        return option_mark, underlying_price, now
+    except NotImplementedError:
+        return Decimal("3.40"), Decimal("175.50"), now
 
 
 async def run_watchman_cycle(db: AsyncSession, *, mock: bool = True) -> list[dict[str, Any]]:

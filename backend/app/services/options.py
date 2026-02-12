@@ -1,19 +1,48 @@
 # AI Advisor Bot — Option Chain Fetcher (A-P1-03) & Strike Selection (A-P1-05)
 # A-FIX-08: Uses MarketDataProvider interface; no hardcoded polygon in core.
 
+from datetime import date, timedelta
 from typing import Any
+
+# A-P1-03: Filter for specific expirations (30–45 DTE)
+DTE_MIN, DTE_MAX = 30, 45
+
+
+def _filter_chain_30_45_dte(chain: dict[str, Any]) -> dict[str, Any]:
+    """A-P1-03: Keep only expirations and puts with 30–45 DTE."""
+    today = date.today()
+    min_date = today + timedelta(days=DTE_MIN)
+    max_date = today + timedelta(days=DTE_MAX)
+    puts = chain.get("puts") or []
+    filtered_puts = []
+    seen_expirations = set()
+    for p in puts:
+        exp = p.get("expiry")
+        if not exp:
+            continue
+        exp_date = exp if isinstance(exp, date) else date.fromisoformat(exp)
+        if min_date <= exp_date <= max_date:
+            filtered_puts.append(p)
+            seen_expirations.add(exp_date.isoformat() if hasattr(exp_date, "isoformat") else str(exp_date))
+    expirations = sorted(seen_expirations) if seen_expirations else (chain.get("expirations") or [])
+    return {
+        "ticker": chain.get("ticker", ""),
+        "expirations": expirations,
+        "puts": filtered_puts,
+    }
 
 
 def fetch_option_chain(ticker: str, *, mock: bool = True, provider=None) -> dict[str, Any]:
     """
-    A-P1-03: Fetch option chain via MarketDataProvider. Filter for 30–45 DTE in implementation.
+    A-P1-03: Fetch option chain via MarketDataProvider. Filter for 30–45 DTE.
     Returns { "expirations": [...], "puts": [ { "strike", "expiry", "delta", "bid", "ask", "iv" }, ... ] }.
     """
     if provider is None:
         from app.config import settings
         from app.services.providers import get_market_data_provider
         provider = get_market_data_provider(mock=mock, polygon_api_key=settings.polygon_api_key)
-    return provider.get_option_chain(ticker)
+    chain = provider.get_option_chain(ticker)
+    return _filter_chain_30_45_dte(chain)
 
 
 # A-FIX-02: Option liquidity gate — (Ask - Bid) / Bid_Price < 0.10 (Spread < 10%)
