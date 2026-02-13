@@ -18,6 +18,7 @@ DEFAULT_DTE_MIN, DEFAULT_DTE_MAX = 30, 45
 
 def run_analysis(
     ticker: str,
+    db: Any,
     *,
     mock_ingestion: bool = True,
     use_llm: bool = False,
@@ -170,6 +171,23 @@ def run_analysis(
             "no_trade": True,
             "reason": "NO_TRADE: Earnings event between today and expiry.",
             "analysis": {**analysis_payload, "earnings_date": earnings_date.isoformat() if hasattr(earnings_date, "isoformat") else earnings_date},
+            "recommendation": None,
+        }
+
+    # A-P5-05: Sector value exposure — block if sector would exceed MAX_SECTOR_ALLOCATION
+    sector = (analysis_payload or {}).get("sector") or "Unknown"
+    new_capital = float(strike) * 100 * 1  # strike * 100 * contracts
+    from app.services.universe import sector_value_exposure_allowed
+    if not sector_value_exposure_allowed(
+        db, sector, new_capital, getattr(settings, "max_sector_allocation_pct", 0.70)
+    ):
+        return {
+            "ticker": ticker.upper(),
+            "timestamp": timestamp,
+            "regime": regime,
+            "no_trade": True,
+            "reason": "NO_TRADE: Sector value exposure would exceed max allocation.",
+            "analysis": analysis_payload,
             "recommendation": None,
         }
 

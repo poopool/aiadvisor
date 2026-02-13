@@ -150,7 +150,7 @@ The system follows a containerized, 3-tier microservices architecture designed f
 | **A-P2-08** | **System Heartbeat** | Sends a "System Online" heartbeat to the human every 4 hours. Checks Data Freshness. | Arch | ✅ Completed |
 | **A-P2-09** | **Frontend: Watchtower** | UI Dashboard showing `ActivePositions`. Visual indicators (Red/Green) for Stop Loss or Profit targets. | Frontend | ✅ Completed |
 
-**Phase 2 implementation**: All items implemented. **A-P2-01**: `active_positions` table and `/positions` API; approve flow creates position and sets risk_rules (stop 3×, take profit 0.5×). **A-P2-02**: Watchman loop polls every 15 min during market hours (A-FIX-06), else hourly; mark and underlying price come from `MarketDataProvider.get_quote(ticker)` when not mock (Mock provider implements `get_quote`; Polygon can implement or fallback). **A-P2-03–A-P2-06**: 21 DTE, strike touch, stop loss, take profit monitors in `watchman.run_watchman_cycle`; `last_heartbeat` updated with mark, underlying, and data freshness. **A-P2-07**: `AlertLog` and `_ensure_alert_sent` enforce idempotency per position/trigger. **A-P2-08**: Heartbeat message built and exposed at `/heartbeat`; when `HEARTBEAT_WEBHOOK_URL` or `ALERT_WEBHOOK_URL` are set, Watchman POSTs heartbeat (every 4h) and triggered alerts to those URLs. **A-P2-09**: Frontend Watchtower at `/watchtower` lists active positions with Red/Green for stop and take-profit, and CLOSING_URGENT row styling.
+**Phase 2 implementation**: All items implemented. **A-P2-01**: `active_positions` table and `/positions` API; approve flow creates position and sets risk_rules (stop 3×, take profit 0.5×). **A-P2-02**: Watchman loop polls every 15 min during market hours (A-FIX-06), else hourly; mark and underlying price come from `MarketDataProvider.get_quote(ticker)` when not mock (Mock provider implements `get_quote`; Polygon can implement or fallback). **A-P2-03–A-P2-06**: 21 DTE, strike touch (handles both SHORT_PUT and SHORT_CALL), stop loss, take profit monitors in `watchman.run_watchman_cycle`; `last_heartbeat` updated with mark, underlying, and data freshness. **A-P2-07**: `AlertLog` and `_ensure_alert_sent` enforce idempotency per position/trigger. **A-P2-08**: Heartbeat message built and exposed at `/heartbeat`; when `HEARTBEAT_WEBHOOK_URL` or `ALERT_WEBHOOK_URL` are set, Watchman POSTs heartbeat (every 4h) and triggered alerts to those URLs. **A-P2-09**: Frontend Watchtower at `/watchtower` lists active positions with Red/Green for stop and take-profit, and CLOSING_URGENT row styling.
 
 ### Phase 3: The Hunter (Automated Scanning)
 | ID | Title | Acceptance Criteria (Pass/Fail) | Owners | Status |
@@ -161,6 +161,8 @@ The system follows a containerized, 3-tier microservices architecture designed f
 | **A-P3-04** | Macro/Event Filter | Check "Earnings Date". Exclude if Earnings is within trade duration. | Trader | ✅ Completed |
 | **A-P3-05** | **Sector Correlation Cap** | Prevents recommending more than 2 active trades in the same sector. | Trader | ✅ Completed |
 | **A-P3-06** | **Rate Limit Controller** | Implements a queuing system for API calls to prevent data provider throttling. | Arch | ✅ Completed |
+
+**Phase 3 implementation**: All items implemented. **A-P3-01**: S&P 500 universe is fetched from Wikipedia. **A-P3-02**: Liquidity filter is applied at the option level, not the stock level. **A-P3-03**: Batch analysis runner runs Phase 1 logic on all liquid tickers. **A-P3-04**: Macro/event filter excludes trades with earnings within the trade duration. **A-P3-05**: Sector correlation cap prevents recommending more than 2 active trades in the same sector. **A-P3-06**: In-memory rate limiter implemented.
 
 ### Phase 4: Macro & Manager
 **Purpose**: Automation of the "Event Horizon" macro filter, "Income Shield" rolling logic, and refinement of entry criteria. Introduces strict externalization of all strategy configuration values to prevent hardcoding.
@@ -173,7 +175,7 @@ The system follows a containerized, 3-tier microservices architecture designed f
 | **A-P5-04** | **Income Shield (Roll Logic)** | Update `watchman.py`. New alert type: `ROLL_NEEDED`. <br> **Trigger**: If `(Price - Strike)/Strike > settings.ROLL_ITM_PCT` (config: 0.03) AND `DTE < settings.ROLL_DTE_TRIGGER` (config: 14). | Trader | ✅ Completed |
 | **A-P5-05** | **Sector Value Exposure** | Update `ActivePosition` to track `capital_deployed`. <br> **Gate**: Block trade if `Sum(Capital) in Sector > settings.MAX_SECTOR_ALLOCATION` (config: 70%). | Arch | ✅ Completed |
 
-**Phase 4 implementation**: **A-P5-01**: `MacroCalendarProvider` in `app/services/macro_calendar.py` (Mock + Trading Economics stub); `macro_event_gate_blocked()` blocks new entries in `POST /analyze` and `POST /analyze/batch` when high-impact event within `macro_lookahead_hours`. **A-P5-02**: All thresholds in `config.Settings` (iv_natr_min_ratio, dte_alert_threshold, rsi_overbought/oversold, roll_itm_pct, roll_dte_trigger, etc.); `QuantLaws` and `strategy_selector` read from settings. **A-P5-03**: RSI gate (Short Put only if RSI < rsi_entry_threshold) and annualized yield gate (yield > min_yield_pct) in `analysis.py`. **A-P5-04**: Watchman triggers `ROLL_NEEDED` when (Price−Strike)/Strike ≥ roll_itm_pct and DTE < roll_dte_trigger; idempotent via AlertLog. **A-P5-05**: `entry_data.capital_deployed` and `entry_data.sector` on approve; `sector_value_exposure_allowed()` in `universe.py`; gate in analyze and batch.
+**Phase 4 implementation**: **A-P5-01**: `MacroCalendarProvider` in `app/services/macro_calendar.py` (Mock + Trading Economics); `macro_event_gate_blocked()` blocks new entries in `POST /analyze` and `POST /analyze/batch` when high-impact event within `macro_lookahead_hours`. **A-P5-02**: All thresholds in `config.Settings` (iv_natr_min_ratio, dte_alert_threshold, rsi_overbought/oversold, roll_itm_pct, roll_dte_trigger, etc.); `QuantLaws` and `strategy_selector` read from settings. **A-P5-03**: RSI gate (Short Put only if RSI < rsi_entry_threshold) and annualized yield gate (yield > min_yield_pct) in `analysis.py`. **A-P5-04**: Watchman triggers `ROLL_NEEDED` when (Price−Strike)/Strike ≥ roll_itm_pct and DTE < roll_dte_trigger; idempotent via AlertLog. **A-P5-05**: `entry_data.capital_deployed` and `entry_data.sector` on approve; `sector_value_exposure_allowed()` in `universe.py`; gate in analyze and batch.
 
 ### Phase 5: Local Dev & Debugging (Immediate)
 *Focus: Ensuring the "Math" is correct, the loops don't die silently, and the data is trustworthy during your local testing.*
@@ -208,6 +210,37 @@ The system follows a containerized, 3-tier microservices architecture designed f
 | **A-OPS-03** | **External Secrets Management** | Remove hardcoded passwords in `docker-compose.yml`. Update `config.py` to enforce loading secrets (DB Pass, API Keys) strictly from Environment Variables. | Ops | 🔴 Todo |
 | **A-OPS-04** | **Structured Logging** | Replace `print()` statements with a JSON-structured logger (e.g., `structlog`). Logs must include `severity`, `timestamp`, and `correlation_id` for Cloud Logging ingestion. | Ops | 🔴 Todo |
 | **A-OPS-05** | **Dedicated Worker Service** | Refactor: Extract the `Watchman` loop from the API container into a separate `worker` entrypoint. `docker-compose` and Cloud Run must run API and Worker as distinct services. | Arch | 🔴 Todo |
+
+### Phase 8: UI/UX Modernization (The Command Center)
+**Purpose**: Transform the frontend from a debug viewer into a professional "Command Center" that exposes all backend capabilities (Manual Analysis, Batch Runs, System Health) in a Dark Mode environment.
+
+| ID | Title | Acceptance Criteria (Pass/Fail) | Owners | Status |
+|---|---|---|---|---|
+| **A-UI-01** | **Global Dark Mode & App Shell** | **Visual Overhaul**: Implement a strict "Financial Dark Mode" (e.g., Slate-900/Zinc-950 background). <br> **Layout**: Replace the homepage buttons with a persistent **Sidebar Navigation** (Dashboard, Analyst, Queue, Watchtower). <br> **Typography**: Use Monospace fonts (e.g., `JetBrains Mono` or `Geist Mono`) for all financial data (Prices, Greeks, Strikes). | Frontend | ✅ Completed |
+| **A-UI-02** | **"The Analyst" Console (Manual Entry)** | **New Page**: `/analyst`. <br> **Input**: Search bar accepting a Ticker Symbol (connects to `POST /analyze/{ticker}`). <br> **Output**: Display the Analysis Result (Card View) including the generated Thesis, Greeks, and Safety Checks. <br> **Action**: "Add to Queue" button (if trade is valid) or "Force Ignore". | Frontend | ✅ Completed |
+| **A-UI-03** | **Command Center Dashboard** | **New Page**: `/` (Home). <br> **Widgets**: <br> 1. **System Health**: Heartbeat indicator (Green Pulse) pulling from `/heartbeat`. <br> 2. **Quick Stats**: Count of Active Positions, Pending Approvals, and Recent Alerts. <br> 3. **Batch Trigger**: Button to manually trigger `POST /analyze/batch` with a loading state. | Frontend | ✅ Completed |
+| **A-UI-04** | **Enhanced Data Tables** | **Refactor**: Update Queue and Watchtower tables. <br> **Features**: <br> 1. **Badges**: Colored Pills for Status (PENDING=Yellow, OPEN=Blue, CLOSING_URGENT=Red animate-pulse). <br> 2. **Expandable Rows**: Click a row to reveal hidden details (Full Thesis text, specific Risk Rules, detailed Entry Data) that don't fit in columns. <br> 3. **Copy-to-Clipboard**: Quick copy for Contract IDs. | Frontend | ✅ Completed |
+| **A-UI-05** | **System Notifications (Toasts)** | **Feedback Loop**: Implement a Toast system (e.g., `sonner` or `react-hot-toast`). <br> **Triggers**: Show Success/Error popups when Approving/Rejecting trades, running Analysis, or when the System Heartbeat fails (500 Error). | Frontend | ✅ Completed |
+
+**Phase 8 implementation**: **A-UI-01**: Dark theme in `globals.css` (slate-950/slate-900); `AppShell` and `Sidebar` in `app/components/` with persistent nav (Dashboard, Analyst, Queue, Watchtower); Tailwind `font-mono` and `.font-financial` for prices, Greeks, strikes. **A-UI-02**: `/analyst` page with ticker search → `POST /analyze/{ticker}`, result card (thesis, Greeks, safety), "Open in Queue" / "Dismiss". **A-UI-03**: Home `/` is Command Center: System Health (heartbeat from `/heartbeat`, green pulse when OK), Quick Stats (active positions, pending approvals), Batch Trigger button with loading. **A-UI-04**: Queue and Watchtower tables refactored with status badges (PENDING=amber, MONITORING=blue, CLOSING_URGENT=red animate-pulse), expandable rows (click for full thesis/risk rules/entry data), Copy button for contract IDs. **A-UI-05**: `sonner` Toaster in `providers.tsx`; success/error toasts on Approve/Reject, Analyst run, batch run.
+
+### Phase 9: Portfolio Management & Usability
+**Purpose**: Enhance direct user control over the portfolio, allowing for manual entry and removal of positions to synchronize the Watchtower with an external brokerage account.
+
+| ID | Title | Acceptance Criteria (Pass/Fail) | Owners | Status |
+|---|---|---|---|---|
+| **A-P9-01** | **Manual Position Management** | **API**: `POST /positions/manual` endpoint creates an `ActivePosition` from user inputs (Ticker, Strategy, etc.), returning the new object. <br> **API**: `DELETE /positions/{position_id}` endpoint removes a position. <br> **UI**: Watchtower page includes an "Add Manual Position" button/form. <br> **UI**: Each position row has a "Delete" button with a confirmation step. | Arch, Frontend | ✅ Completed |
+
+**Phase 9 implementation**: **A-P9-01**: Implemented. `POST /positions/manual` added to `main.py` with `ManualPositionCreate` schema; `DELETE /positions/{position_id}` also added. Frontend `watchtower/page.tsx` updated with "Add Manual Position" button, a modal form (`ManualPositionForm.tsx`), and a "Delete" button on each row, all connected via React Query mutations.
+
+### Phase 10: System Refinements
+**Purpose**: Improve the efficiency and robustness of core background processes.
+
+| ID | Title | Acceptance Criteria (Pass/Fail) | Owners | Status |
+|---|---|---|---|---|
+| **A-FIX-15** | **Efficient Watchman Scheduling** | The `_watchman_job` scheduler task must verify `is_market_hours()` before executing the `run_watchman_cycle`. The job should exit early if the market is closed to conserve resources and API quota. | Arch | ✅ Completed |
+
+**Phase 10 implementation**: **A-FIX-15**: Implemented. The `_watchman_job` function in `main.py` now includes a guard clause at the beginning that calls `is_market_hours()` and returns immediately if it's false.
 
 ---
 

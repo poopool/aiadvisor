@@ -19,7 +19,7 @@ from decimal import Decimal
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from sqlalchemy import and_, text, select
+from sqlalchemy import and_, text, select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -27,10 +27,12 @@ from app.analysis import run_analysis
 from app.watchman import run_watchman_cycle, get_heartbeat_message
 from app.batch_analysis import run_batch_analysis
 from app.services.ingestion import fetch_market_data, persist_market_data
+from app.schemas import ManualPositionCreate
 
 # Database (import after path fix)
 from database.session import get_engine, get_session_factory, init_db
-from database.models import TradeRecommendation, ActivePosition
+from database.models import TradeRecommendation, ActivePosition, AlertLog
+
 
 # A-FIX-14: JSON serialization — Decimal as string to prevent IEEE 754 precision loss
 def _decimal_serializer(obj):
@@ -114,6 +116,10 @@ async def _watchman_job():
     global _last_heartbeat_time
     from app.watchman import DataFetchError
     from app.market_hours import is_market_hours
+    
+    if not is_market_hours():
+        return # Markets are closed, do nothing.
+
     session_factory = _get_session_factory()
     try:
         async with session_factory() as session:
@@ -201,7 +207,7 @@ async def analyze(
     # §2.2: Fetch then persist to Data Layer before analysis
     market_data = fetch_market_data(ticker, mock=mock)
     await persist_market_data(db, ticker, market_data["latest"])
-    result = run_analysis(ticker, mock_ingestion=mock, use_llm=use_llm, market_data_result=market_data)
+    result = run_analysis(ticker, db, mock_ingestion=mock, use_llm=use_llm, market_data_result=market_data)
 
     rec_payload = result.get("recommendation")
     # A-FIX-03: NO_TRADE (e.g. earnings) — do not persist; also skip Strategy=NONE (failed gates)
@@ -435,6 +441,74 @@ async def list_positions(
     ]
 
 
+@app.post("/positions/manual", status_code=201)
+async def create_manual_position(
+    payload: ManualPositionCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """A-P9-01: Manually create an ActivePosition."""
+    # Reuse risk rule logic from approval flow
+    stop_loss = payload.entry_price * Decimal("3")
+    take_profit = payload.entry_price * Decimal("0.5")
+    force_close = payload.expiry_date - timedelta(days=21)
+    if force_close < date.today():
+        force_close = date.today()
+
+    capital_deployed = payload.capital_deployed
+    if capital_deployed is None:
+        capital_deployed = float(payload.short_strike) * 100 * payload.contracts
+
+    position = ActivePosition(
+        id=uuid4(),
+        ticker=payload.ticker.upper(),
+        status="OPEN",
+        lifecycle_stage="MONITORING",
+        entry_data={
+            "strategy": payload.strategy.value,
+            "short_strike": float(payload.short_strike),
+            "expiry_date": payload.expiry_date.isoformat(),
+            "entry_price": float(payload.entry_price),
+            "entry_timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "contracts": payload.contracts,
+            "capital_deployed": capital_deployed,
+            "sector": payload.sector or "Unknown",
+        },
+        risk_rules={
+            "stop_loss_price": float(stop_loss),
+            "take_profit_price": float(take_profit),
+            "max_dte_hold": 21,
+            "force_close_date": force_close.isoformat(),
+        },
+        last_heartbeat=None,
+    )
+    db.add(position)
+    await db.flush()
+    await db.refresh(position)  # Refresh to get created_at
+    return position
+
+
+@app.delete("/positions/{position_id}", status_code=204)
+async def delete_position(
+    position_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """A-P9-01: Delete an active position and its associated alerts."""
+    # First, get the position to ensure it exists
+    result = await db.execute(select(ActivePosition).where(ActivePosition.id == position_id))
+    position = result.scalar_one_or_none()
+    if not position:
+        raise HTTPException(status_code=404, detail="Position not found")
+
+    # Delete associated alerts
+    await db.execute(delete(AlertLog).where(AlertLog.position_id == position_id))
+
+    # Delete the position
+    await db.delete(position)
+    await db.flush()
+    return None
+
+
+
 @app.get("/heartbeat")
 async def heartbeat():
     """A-P2-08: System heartbeat (also used by Watchman every 4h)."""
@@ -455,7 +529,7 @@ async def analyze_batch(
     ):
         return {"blocked": True, "reason": "High-impact macro event within lookahead.", "results": []}
 
-    results = await run_batch_analysis(mock_ingestion=settings.ingestion_mock_mode, max_tickers=10)
+    results = await run_batch_analysis(db, mock_ingestion=settings.ingestion_mock_mode, max_tickers=10)
     for rec in results:
         r = rec.get("recommendation") or {}
         if not r or r.get("strategy") == "NONE":
