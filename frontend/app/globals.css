@@ -2,12 +2,21 @@
 @tailwind components;
 @tailwind utilities;
 
+/* A-UI-01: Financial Dark Mode — Slate-900 / Zinc-950 */
 :root {
-  --foreground: #0f172a;
-  --background: #f8fafc;
+  --foreground: #f1f5f9;
+  --background: #0f172a;
+  --background-elevated: #1e293b;
+  --border: #334155;
+  --accent: #3b82f6;
 }
 
 body {
   color: var(--foreground);
   background: var(--background);
+}
+
+/* Monospace for financial data (prices, greeks, strikes) — applied via .font-mono or .font-financial */
+.font-financial {
+  font-family: ui-monospace, "JetBrains Mono", "Geist Mono", "SF Mono", Menlo, Monaco, Consolas, monospace;
 }

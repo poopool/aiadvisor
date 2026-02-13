@@ -211,6 +211,37 @@ The system follows a containerized, 3-tier microservices architecture designed f
 | **A-OPS-04** | **Structured Logging** | Replace `print()` statements with a JSON-structured logger (e.g., `structlog`). Logs must include `severity`, `timestamp`, and `correlation_id` for Cloud Logging ingestion. | Ops | 🔴 Todo |
 | **A-OPS-05** | **Dedicated Worker Service** | Refactor: Extract the `Watchman` loop from the API container into a separate `worker` entrypoint. `docker-compose` and Cloud Run must run API and Worker as distinct services. | Arch | 🔴 Todo |
 
+### Phase 8: UI/UX Modernization (The Command Center)
+**Purpose**: Transform the frontend from a debug viewer into a professional "Command Center" that exposes all backend capabilities (Manual Analysis, Batch Runs, System Health) in a Dark Mode environment.
+
+| ID | Title | Acceptance Criteria (Pass/Fail) | Owners | Status |
+|---|---|---|---|---|
+| **A-UI-01** | **Global Dark Mode & App Shell** | **Visual Overhaul**: Implement a strict "Financial Dark Mode" (e.g., Slate-900/Zinc-950 background). <br> **Layout**: Replace the homepage buttons with a persistent **Sidebar Navigation** (Dashboard, Analyst, Queue, Watchtower). <br> **Typography**: Use Monospace fonts (e.g., `JetBrains Mono` or `Geist Mono`) for all financial data (Prices, Greeks, Strikes). | Frontend | ✅ Completed |
+| **A-UI-02** | **"The Analyst" Console (Manual Entry)** | **New Page**: `/analyst`. <br> **Input**: Search bar accepting a Ticker Symbol (connects to `POST /analyze/{ticker}`). <br> **Output**: Display the Analysis Result (Card View) including the generated Thesis, Greeks, and Safety Checks. <br> **Action**: "Add to Queue" button (if trade is valid) or "Force Ignore". | Frontend | ✅ Completed |
+| **A-UI-03** | **Command Center Dashboard** | **New Page**: `/` (Home). <br> **Widgets**: <br> 1. **System Health**: Heartbeat indicator (Green Pulse) pulling from `/heartbeat`. <br> 2. **Quick Stats**: Count of Active Positions, Pending Approvals, and Recent Alerts. <br> 3. **Batch Trigger**: Button to manually trigger `POST /analyze/batch` with a loading state. | Frontend | ✅ Completed |
+| **A-UI-04** | **Enhanced Data Tables** | **Refactor**: Update Queue and Watchtower tables. <br> **Features**: <br> 1. **Badges**: Colored Pills for Status (PENDING=Yellow, OPEN=Blue, CLOSING_URGENT=Red animate-pulse). <br> 2. **Expandable Rows**: Click a row to reveal hidden details (Full Thesis text, specific Risk Rules, detailed Entry Data) that don't fit in columns. <br> 3. **Copy-to-Clipboard**: Quick copy for Contract IDs. | Frontend | ✅ Completed |
+| **A-UI-05** | **System Notifications (Toasts)** | **Feedback Loop**: Implement a Toast system (e.g., `sonner` or `react-hot-toast`). <br> **Triggers**: Show Success/Error popups when Approving/Rejecting trades, running Analysis, or when the System Heartbeat fails (500 Error). | Frontend | ✅ Completed |
+
+**Phase 8 implementation**: **A-UI-01**: Dark theme in `globals.css` (slate-950/slate-900); `AppShell` and `Sidebar` in `app/components/` with persistent nav (Dashboard, Analyst, Queue, Watchtower); Tailwind `font-mono` and `.font-financial` for prices, Greeks, strikes. **A-UI-02**: `/analyst` page with ticker search → `POST /analyze/{ticker}`, result card (thesis, Greeks, safety), "Open in Queue" / "Dismiss". **A-UI-03**: Home `/` is Command Center: System Health (heartbeat from `/heartbeat`, green pulse when OK), Quick Stats (active positions, pending approvals), Batch Trigger button with loading. **A-UI-04**: Queue and Watchtower tables refactored with status badges (PENDING=amber, MONITORING=blue, CLOSING_URGENT=red animate-pulse), expandable rows (click for full thesis/risk rules/entry data), Copy button for contract IDs. **A-UI-05**: `sonner` Toaster in `providers.tsx`; success/error toasts on Approve/Reject, Analyst run, batch run.
+
+### Phase 9: Portfolio Management & Usability
+**Purpose**: Enhance direct user control over the portfolio, allowing for manual entry and removal of positions to synchronize the Watchtower with an external brokerage account.
+
+| ID | Title | Acceptance Criteria (Pass/Fail) | Owners | Status |
+|---|---|---|---|---|
+| **A-P9-01** | **Manual Position Management** | **API**: `POST /positions/manual` endpoint creates an `ActivePosition` from user inputs (Ticker, Strategy, etc.), returning the new object. <br> **API**: `DELETE /positions/{position_id}` endpoint removes a position. <br> **UI**: Watchtower page includes an "Add Manual Position" button/form. <br> **UI**: Each position row has a "Delete" button with a confirmation step. | Arch, Frontend | ✅ Completed |
+
+**Phase 9 implementation**: **A-P9-01**: Implemented. `POST /positions/manual` added to `main.py` with `ManualPositionCreate` schema; `DELETE /positions/{position_id}` also added. Frontend `watchtower/page.tsx` updated with "Add Manual Position" button, a modal form (`ManualPositionForm.tsx`), and a "Delete" button on each row, all connected via React Query mutations.
+
+### Phase 10: System Refinements
+**Purpose**: Improve the efficiency and robustness of core background processes.
+
+| ID | Title | Acceptance Criteria (Pass/Fail) | Owners | Status |
+|---|---|---|---|---|
+| **A-FIX-15** | **Efficient Watchman Scheduling** | The `_watchman_job` scheduler task must verify `is_market_hours()` before executing the `run_watchman_cycle`. The job should exit early if the market is closed to conserve resources and API quota. | Arch | ✅ Completed |
+
+**Phase 10 implementation**: **A-FIX-15**: Implemented. The `_watchman_job` function in `main.py` now includes a guard clause at the beginning that calls `is_market_hours()` and returns immediately if it's false.
+
 ---
 
 ## 6) Data Structures (Canonical)

@@ -1,6 +1,6 @@
 # AI Advisor Bot
 
-Semi-autonomous options analytics engine: **Phase 0–6** (excluding Phase 7 GCP). See **PROJECT_CONTEXT.md** for the full spec and backlog.
+Semi-autonomous options analytics engine: **Phase 0–6** and **Phase 8** (excluding Phase 7 GCP). See **PROJECT_CONTEXT.md** for the full spec and backlog.
 
 ## Features (by phase)
 
@@ -12,6 +12,7 @@ Semi-autonomous options analytics engine: **Phase 0–6** (excluding Phase 7 GCP
 - **Phase 4 (Macro & Manager)**: **Macro calendar** gate (block new entries before high-impact events); **externalized config** (all thresholds in `config.Settings`); **refined entry gates** (RSI &lt; 40, annualized yield &gt; 20%); **Income Shield** (`ROLL_NEEDED` when ITM and DTE &lt; 14); **sector value exposure** (capital_deployed, max 70% per sector).
 - **Phase 5 (Local Dev & Debugging)**: **APScheduler** for Watchman (no zombie loop); **DataFetchError** (no silent mock fallbacks); **Bid/Ask** (bid = credit, ask = buy-to-close); **recommendation idempotency** (return existing PENDING); **Decimal JSON** (serialize as strings).
 - **Phase 6 (Institutional Mechanics)**: **Term structure** (IV/NATR at target expiry); **25Δ skew gate** (block Short Put if skew &gt; threshold).
+- **Phase 8 (UI/UX Command Center)**: **Dark mode** (Slate-950/Zinc); **sidebar** (Dashboard, Analyst, Queue, Watchtower); **monospace** for financial data; **/analyst** (manual ticker analysis, result card, Open in Queue / Dismiss); **Dashboard /** (heartbeat, quick stats, batch trigger); **enhanced tables** (badges, expandable rows, copy contract ID); **toasts** (sonner) for Approve/Reject/Analysis/Batch.
 
 ## Run the stack (Docker)
 
@@ -23,8 +24,10 @@ docker compose up -d
 open http://localhost:8000
 # Docs: http://localhost:8000/docs
 
-# Frontend (Next.js)
+# Frontend (Next.js) — Command Center (dark mode)
 open http://localhost:3000
+# Dashboard:     http://localhost:3000/
+# Analyst:       http://localhost:3000/analyst
 # Approval Queue: http://localhost:3000/approval-queue
 # Watchtower:    http://localhost:3000/watchtower
 ```
@@ -76,7 +79,7 @@ PYTHONPATH=. alembic upgrade head
 | `backend/` | FastAPI app, QuantLaws, analysis pipeline, Watchman (APScheduler), batch runner |
 | `backend/app/services/` | Ingestion, options chain, regime, LLM synthesis, universe, rate limit, **providers** (MarketDataProvider), **macro_calendar** (MacroCalendarProvider) |
 | `database/` | SQLAlchemy models, async session, Alembic migrations |
-| `frontend/` | Next.js (React, Tailwind, React Query): Approval Queue, Watchtower |
+| `frontend/` | Next.js (React, Tailwind, React Query, sonner): Command Center (Dashboard, Analyst, Queue, Watchtower), dark mode, sidebar |
 | `docker-compose.yml` | Postgres, Redis, API, Frontend |
 
 ## Environment

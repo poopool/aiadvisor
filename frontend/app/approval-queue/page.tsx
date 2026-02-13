@@ -1,6 +1,8 @@
 "use client";
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState, Fragment } from "react";
+import { toast } from "sonner";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -13,10 +15,9 @@ type Recommendation = {
   status: string;
   calculated_metrics: {
     analysis?: { price?: number; rsi_14?: number; trend?: string; iv_natr_ratio?: number; expected_move_1sd?: number };
-    recommendation?: { thesis?: string; safety_check?: string; credit_est?: number };
+    recommendation?: { thesis?: string; safety_check?: string; credit_est?: number; contract?: string };
   } | null;
   created_at: string | null;
-  /** A-FIX-05: Present when ?check_stale=1 */
   live_price?: number;
   live_credit?: number;
   thesis_stale?: boolean;
@@ -40,8 +41,15 @@ async function reject(id: string) {
   return res.json();
 }
 
+function copyContract(contract: string) {
+  navigator.clipboard.writeText(contract);
+  toast.success("Contract ID copied");
+}
+
 export default function ApprovalQueuePage() {
   const queryClient = useQueryClient();
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
   const { data: recommendations, isLoading, error } = useQuery({
     queryKey: ["recommendations", "PENDING"],
     queryFn: fetchRecommendations,
@@ -50,79 +58,120 @@ export default function ApprovalQueuePage() {
 
   const approveMutation = useMutation({
     mutationFn: approve,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["recommendations"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["recommendations"] });
+      toast.success("Recommendation approved");
+    },
+    onError: (err: Error) => toast.error(err.message),
   });
 
   const rejectMutation = useMutation({
     mutationFn: reject,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["recommendations"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["recommendations"] });
+      toast.success("Recommendation rejected");
+    },
+    onError: (err: Error) => toast.error(err.message),
   });
 
-  if (isLoading) return <div className="p-8">Loading…</div>;
-  if (error) return <div className="p-8 text-red-600">Error: {(error as Error).message}</div>;
+  if (isLoading) return <div className="p-8 text-slate-400">Loading…</div>;
+  if (error) return <div className="p-8 text-red-400">Error: {(error as Error).message}</div>;
 
   return (
-    <main className="min-h-screen p-8">
-      <h1 className="text-2xl font-bold text-slate-800 mb-6">Approval Queue</h1>
-      <p className="text-slate-600 mb-6">PENDING recommendations. Approve to move to Monitor; Reject to dismiss.</p>
-      <div className="overflow-x-auto">
-        <table className="w-full border border-slate-200 rounded-lg overflow-hidden">
-          <thead className="bg-slate-100">
+    <div className="p-8">
+      <h1 className="text-2xl font-bold text-slate-100 mb-2 font-mono">Approval Queue</h1>
+      <p className="text-slate-400 text-sm mb-6">PENDING recommendations. Approve to move to Monitor; Reject to dismiss.</p>
+      <div className="overflow-x-auto rounded-xl border border-slate-700">
+        <table className="w-full">
+          <thead className="bg-slate-800/80">
             <tr>
-              <th className="text-left p-3">Ticker</th>
-              <th className="text-left p-3">Strategy</th>
-              <th className="text-left p-3">Strike</th>
-              <th className="text-left p-3">Expiry</th>
-              <th className="text-left p-3">Thesis / Safety</th>
-              <th className="text-left p-3">Actions</th>
+              <th className="text-left p-3 text-slate-400 text-xs font-medium uppercase">Ticker</th>
+              <th className="text-left p-3 text-slate-400 text-xs font-medium uppercase">Strategy</th>
+              <th className="text-left p-3 text-slate-400 text-xs font-medium uppercase">Strike</th>
+              <th className="text-left p-3 text-slate-400 text-xs font-medium uppercase">Expiry</th>
+              <th className="text-left p-3 text-slate-400 text-xs font-medium uppercase">Thesis / Safety</th>
+              <th className="text-left p-3 text-slate-400 text-xs font-medium uppercase">Actions</th>
+              <th className="w-8" />
             </tr>
           </thead>
           <tbody>
             {(!recommendations || recommendations.length === 0) && (
               <tr>
-                <td colSpan={6} className="p-6 text-slate-500 text-center">
+                <td colSpan={7} className="p-6 text-slate-500 text-center">
                   No PENDING recommendations.
                 </td>
               </tr>
             )}
-            {recommendations?.map((r) => (
-              <tr key={r.id} className="border-t border-slate-200 hover:bg-slate-50">
-                <td className="p-3 font-medium">{r.ticker}</td>
-                <td className="p-3">{r.strategy}</td>
-                <td className="p-3">{r.strike}</td>
-                <td className="p-3">{r.expiry}</td>
-                <td className="p-3 max-w-md text-sm text-slate-600">
-                  {r.thesis_stale && (
-                    <span className="block font-semibold text-amber-600 mb-1">THESIS STALE</span>
-                  )}
-                  {r.calculated_metrics?.recommendation?.thesis ?? "—"}
-                  {r.calculated_metrics?.recommendation?.safety_check && (
-                    <span className="block mt-1 text-slate-500">
-                      {r.calculated_metrics.recommendation.safety_check}
-                    </span>
-                  )}
-                </td>
-                <td className="p-3 flex gap-2">
-                  <button
-                    onClick={() => approveMutation.mutate(r.id)}
-                    disabled={approveMutation.isPending || rejectMutation.isPending}
-                    className="rounded bg-green-600 text-white px-3 py-1.5 text-sm hover:bg-green-700 disabled:opacity-50"
+            {recommendations?.map((r) => {
+              const isExpanded = expandedId === r.id;
+              const contract = r.calculated_metrics?.recommendation?.contract;
+              return (
+                <Fragment key={r.id}>
+                  <tr
+                    className="border-t border-slate-700 hover:bg-slate-800/50 cursor-pointer"
+                    onClick={() => setExpandedId(isExpanded ? null : r.id)}
                   >
-                    Approve
-                  </button>
-                  <button
-                    onClick={() => rejectMutation.mutate(r.id)}
-                    disabled={approveMutation.isPending || rejectMutation.isPending}
-                    className="rounded bg-red-600 text-white px-3 py-1.5 text-sm hover:bg-red-700 disabled:opacity-50"
-                  >
-                    Reject
-                  </button>
-                </td>
-              </tr>
-            ))}
+                    <td className="p-3 font-mono font-medium text-slate-200">{r.ticker}</td>
+                    <td className="p-3">
+                      <span className="inline-flex items-center rounded-full bg-amber-500/20 text-amber-400 px-2.5 py-0.5 text-xs font-medium">
+                        PENDING
+                      </span>
+                      <span className="ml-2 text-slate-300">{r.strategy}</span>
+                    </td>
+                    <td className="p-3 font-mono text-slate-200">{r.strike}</td>
+                    <td className="p-3 font-mono text-slate-300 text-sm">{r.expiry}</td>
+                    <td className="p-3 max-w-md text-sm text-slate-400">
+                      {r.thesis_stale && (
+                        <span className="block font-semibold text-amber-400 mb-1">THESIS STALE</span>
+                      )}
+                      {(r.calculated_metrics?.recommendation?.thesis ?? "—").slice(0, 80)}
+                      {(r.calculated_metrics?.recommendation?.thesis?.length ?? 0) > 80 ? "…" : ""}
+                    </td>
+                    <td className="p-3 flex gap-2">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); approveMutation.mutate(r.id); }}
+                        disabled={approveMutation.isPending || rejectMutation.isPending}
+                        className="rounded bg-emerald-600 text-white px-3 py-1.5 text-sm hover:bg-emerald-700 disabled:opacity-50"
+                      >
+                        Approve
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); rejectMutation.mutate(r.id); }}
+                        disabled={approveMutation.isPending || rejectMutation.isPending}
+                        className="rounded bg-red-600 text-white px-3 py-1.5 text-sm hover:bg-red-700 disabled:opacity-50"
+                      >
+                        Reject
+                      </button>
+                    </td>
+                    <td className="p-3">
+                      {contract && (
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); copyContract(contract); }}
+                          className="text-slate-500 hover:text-slate-300 text-xs"
+                          title="Copy contract ID"
+                        >
+                          Copy
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                  {isExpanded && (
+                    <tr key={`${r.id}-exp`} className="border-t border-slate-700 bg-slate-800/60">
+                      <td colSpan={7} className="p-4 text-sm">
+                        <p className="text-slate-400 mb-1 font-medium">Full thesis</p>
+                        <p className="text-slate-300 mb-3">{r.calculated_metrics?.recommendation?.thesis ?? "—"}</p>
+                        <p className="text-slate-400 mb-1 font-medium">Safety check</p>
+                        <p className="text-slate-300">{r.calculated_metrics?.recommendation?.safety_check ?? "—"}</p>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
-    </main>
+    </div>
   );
 }
