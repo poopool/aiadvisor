@@ -1,12 +1,16 @@
 # AI Advisor Bot — Watchman (Phase 2)
 # A-P2-02 Poller, A-P2-03 21 DTE, A-P2-04 Strike touch, A-P2-05 Stop loss, A-P2-06 Take profit, A-P2-07 Idempotency, A-P2-08 Heartbeat
+# A-OPS-08: Debug logging (logger.debug for cycle flow)
 
+import logging
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+
+logger = logging.getLogger("watchman")
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import ActivePosition, AlertLog
@@ -26,10 +30,15 @@ def _data_stale_minutes() -> int:
     return getattr(settings, "data_stale_minutes", 60) or 60
 
 
-async def get_mark_price_for_position(ticker: str, *, mock: bool = True) -> tuple[Decimal, Decimal, datetime]:
+async def get_mark_price_for_position(
+    ticker: str,
+    *,
+    entry_data: dict | None = None,
+    mock: bool = True,
+) -> tuple[Decimal, Decimal, datetime]:
     """
     Return (mark_price, underlying_price, fetched_at). A-P2-02 / A-P2-04: Smart Polling for Watchman.
-    A-FIX-11: Raises DataFetchError if quote not available (no silent mock fallback).
+    A-FIX-11: Raises DataFetchError if quote not available. A-FIX-16: entry_data passed for Polygon option quote.
     """
     now = datetime.now(timezone.utc)
     if mock:
@@ -38,7 +47,13 @@ async def get_mark_price_for_position(ticker: str, *, mock: bool = True) -> tupl
     from app.services.providers import get_market_data_provider
     provider = get_market_data_provider(mock=False, polygon_api_key=settings.polygon_api_key or "")
     try:
-        underlying_price, option_mark = provider.get_quote(ticker)
+        ed = entry_data or {}
+        strike = ed.get("short_strike")
+        expiry_date = ed.get("expiry_date")
+        strategy = ed.get("strategy")
+        underlying_price, option_mark = provider.get_quote(
+            ticker, strike=strike, expiry_date=expiry_date, strategy=strategy
+        )
         return option_mark, underlying_price, now
     except NotImplementedError as e:
         raise DataFetchError(f"Quote not implemented for provider (ticker={ticker})") from e
@@ -56,10 +71,14 @@ async def run_watchman_cycle(db: AsyncSession, *, mock: bool = True) -> list[dic
     triggered: list[dict[str, Any]] = []
 
     for pos in positions:
+        logger.debug("Checking ticker %s (position_id=%s)", pos.ticker, str(pos.id))
         try:
-            mark, underlying_price, fetched_at = await get_mark_price_for_position(pos.ticker, mock=mock)
+            mark, underlying_price, fetched_at = await get_mark_price_for_position(
+                pos.ticker, entry_data=pos.entry_data or {}, mock=mock
+            )
         except DataFetchError:
             # A-FIX-11: Skip this position, do not use fake data; continue with others
+            logger.debug("Skipping %s: quote not available", pos.ticker)
             continue
         entry = pos.entry_data or {}
         risk = pos.risk_rules or {}
@@ -76,6 +95,29 @@ async def run_watchman_cycle(db: AsyncSession, *, mock: bool = True) -> list[dic
             "underlying_price": float(underlying_price),
             "data_freshness_status": "OK" if data_fresh else "STALE",
         }
+        logger.debug("Price updated for %s: mark=%s underlying=%s", pos.ticker, mark, underlying_price)
+
+        # A-P11-01: P&L engine — market_value, unrealized_pnl, return_pct (Short: profit when Entry > Mark)
+        contracts = int(entry.get("contracts", 1))
+        mult = Decimal(100) * contracts
+        pos.market_value = mark * mult
+        # Short position: unrealized P&L = (Entry - Mark) * 100 * Contracts
+        pos.unrealized_pnl = (entry_price - mark) * mult
+        credit_received = entry_price * mult
+        pos.return_pct = (pos.unrealized_pnl / credit_received * 100) if credit_received else None
+
+        # A-P11-02: Live Greeks ingestion during Watchman cycle
+        try:
+            from app.config import settings
+            from app.services.providers import get_market_data_provider
+            provider = get_market_data_provider(mock=mock, polygon_api_key=settings.polygon_api_key or "")
+            greeks = provider.get_greeks_for_position(
+                pos.ticker, float(strike), expiry_date_str or "", strategy or ""
+            )
+            if greeks is not None:
+                pos.greeks = greeks
+        except (NotImplementedError, Exception):
+            pass  # leave pos.greeks unchanged if provider does not support or errors
 
         # A-P2-04 Strike Touch: underlying price crosses the short strike
         strategy = entry.get("strategy")

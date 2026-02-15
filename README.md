@@ -1,6 +1,6 @@
 # AI Advisor Bot
 
-Semi-autonomous options analytics engine: **Phase 0–6** and **Phase 8** (excluding Phase 7 GCP). See **PROJECT_CONTEXT.md** for the full spec and backlog.
+Semi-autonomous options analytics engine: **Phase 0–6**, **Phase 8**, and **Phase 11** (excluding Phase 7 GCP). See **PROJECT_CONTEXT.md** for the full spec and backlog.
 
 ## Features (by phase)
 
@@ -13,6 +13,7 @@ Semi-autonomous options analytics engine: **Phase 0–6** and **Phase 8** (exclu
 - **Phase 5 (Local Dev & Debugging)**: **APScheduler** for Watchman (no zombie loop); **DataFetchError** (no silent mock fallbacks); **Bid/Ask** (bid = credit, ask = buy-to-close); **recommendation idempotency** (return existing PENDING); **Decimal JSON** (serialize as strings).
 - **Phase 6 (Institutional Mechanics)**: **Term structure** (IV/NATR at target expiry); **25Δ skew gate** (block Short Put if skew &gt; threshold).
 - **Phase 8 (UI/UX Command Center)**: **Dark mode** (Slate-950/Zinc); **sidebar** (Dashboard, Analyst, Queue, Watchtower); **monospace** for financial data; **/analyst** (manual ticker analysis, result card, Open in Queue / Dismiss); **Dashboard /** (heartbeat, quick stats, batch trigger); **enhanced tables** (badges, expandable rows, copy contract ID); **toasts** (sonner) for Approve/Reject/Analysis/Batch.
+- **Phase 11 (Watchtower 2.0 — Robinhood Parity)**: **Backend P&amp;L** (market_value, unrealized_pnl, return_pct in Watchman); **live Greeks** (Delta, Theta, Gamma via `MarketDataProvider.get_greeks_for_position`, stored in `active_positions.greeks`); **Watchtower UI** (card layout, portfolio summary header, expandable position details with Avg Cost, Mark, Total Return, Portfolio Diversity %, Greeks).
 
 ## Run the stack (Docker)
 
@@ -66,11 +67,13 @@ cd frontend && npm install && npm run dev
 
 ## Migrations
 
-From repo root (set `DATABASE_URL` or `alembic.ini`):
+From repo root (set `DATABASE_URL` or use `database/alembic.ini`):
 
 ```bash
-PYTHONPATH=. alembic upgrade head
+PYTHONPATH=. alembic -c database/alembic.ini upgrade head
 ```
+
+Migrations include `005_watchtower_pnl_greeks` (Phase 11: `market_value`, `unrealized_pnl`, `return_pct`, `greeks` on `active_positions`).
 
 ## Layout
 
@@ -85,9 +88,12 @@ PYTHONPATH=. alembic upgrade head
 ## Environment
 
 - `DATABASE_URL` — PostgreSQL connection (async). Default: `postgresql+asyncpg://aiadvisor:aiadvisor_dev@localhost:5432/aiadvisor`
-- `INGESTION_MOCK_MODE` / `ingestion_mock_mode` — `true`: mock market/option data; `false`: use Polygon (implement in services when ready).
+- `INGESTION_MOCK_MODE` / `ingestion_mock_mode` — `true`: mock market/option data; `false`: use Polygon. When false, Watchman uses Polygon for mark/underlying price via `get_quote` (last trade + previous close fallback; A-FIX-16). Set `POLYGON_API_KEY` for live data.
 - `NEXT_PUBLIC_API_URL` — Frontend: API base URL (default `http://localhost:8000` when using Docker).
 - `ALERT_WEBHOOK_URL` — (Optional) Watchman POSTs triggered alerts (21 DTE, stop loss, take profit, strike touch, data stale, ROLL_NEEDED) to this URL.
 - `HEARTBEAT_WEBHOOK_URL` — (Optional) Watchman POSTs the system heartbeat every 4 hours to this URL.
+- `FORCE_MARKET_UPDATES` — (Optional, default `false`) When `true`, Watchman runs even when markets are closed (dev mode). `GET /heartbeat` returns `market_status`: `OPEN` | `CLOSED` | `FORCED`; frontend shows a status banner (A-OPS-06).
+- `WATCHMAN_INTERVAL_MINUTES` — (Optional, default `15`) Interval in minutes for the Watchman poll (A-OPS-07). Example: `5` for more frequent updates during market hours.
+- `BACKEND_DEBUG` — (Optional, default `false`) When `true`, sets logging level to DEBUG and adds Watchman cycle trace logs (A-OPS-08).
 - **Strategy/config** (optional overrides): `MACRO_LOOKAHEAD_HOURS` (default 48), `RSI_ENTRY_THRESHOLD` (40), `MIN_YIELD_PCT` (0.20), `ROLL_ITM_PCT` (0.03), `ROLL_DTE_TRIGGER` (14), `MAX_SECTOR_ALLOCATION_PCT` (0.70), `MAX_SKEW_THRESHOLD` (10), `DATA_STALE_MINUTES` (60). See `backend/app/config.py` for full list.
 - `TRADING_ECONOMICS_API_KEY` — (Optional) For macro calendar when mock is off; high-impact events within lookahead block new entries.
