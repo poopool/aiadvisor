@@ -46,6 +46,19 @@ class Settings(BaseSettings):
     # Watchman data freshness (A-P2-07)
     data_stale_minutes: int = 60
 
+    # A-OPS-06 & A-OPS-07: System Control & Observability
+    force_market_updates: bool = False
+    watchman_interval_minutes: int = 15
+
+    # A-OPS-06: Force market updates when markets are closed (dev mode)
+    force_market_updates: bool = False
+
+    # A-OPS-07: Configurable Watchman poll interval (minutes)
+    watchman_interval_minutes: int = 15
+
+    # A-OPS-08: Debug logging (DEBUG level when True, else INFO)
+    backend_debug: bool = False
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

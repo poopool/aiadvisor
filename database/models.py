@@ -76,6 +76,11 @@ class ActivePosition(Base):
     root_position_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     roll_count: Mapped[int] = mapped_column(default=0)  # 0 = opening trade, 1+ = rolled
     realized_pnl_pre_roll: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    # Phase 11: Watchtower 2.0 — P&L and Greeks
+    market_value: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    unrealized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
+    greeks: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
 

@@ -1,5 +1,6 @@
 # AI Advisor Bot — Alembic async env
 import asyncio
+import os
 from logging.config import fileConfig
 
 from alembic import context
@@ -16,8 +17,13 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+def get_url() -> str:
+    """Prefer DATABASE_URL from environment (e.g. in Docker) else alembic.ini."""
+    return os.environ.get("DATABASE_URL") or config.get_main_option("sqlalchemy.url", "")
+
+
 def run_migrations_offline() -> None:
-    url = config.get_main_option("sqlalchemy.url")
+    url = get_url()
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -36,7 +42,7 @@ def do_run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations() -> None:
     configuration = config.get_section(config.config_ini_section, {}) or {}
-    configuration["sqlalchemy.url"] = config.get_main_option("sqlalchemy.url")
+    configuration["sqlalchemy.url"] = get_url()
     connectable = async_engine_from_config(
         configuration,
         prefix="sqlalchemy.",

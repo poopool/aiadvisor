@@ -2,8 +2,11 @@
 # GET /health, POST /analyze/{ticker}, Approval/Positions, Watchman scheduler
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
+
+logger = logging.getLogger("api")
 
 # Ensure repo root is on path so "database" package is importable when running from backend/
 _repo_root = Path(__file__).resolve().parent.parent.parent
@@ -114,14 +117,16 @@ async def _watchman_job():
     """Single Watchman cycle + optional 4h heartbeat. Exceptions logged and re-raised so scheduler can retry."""
     import time
     global _last_heartbeat_time
+    logger.debug("Watchman job triggered.")
     from app.watchman import DataFetchError
     from app.market_hours import is_market_hours
-    
-    if not is_market_hours():
-        return # Markets are closed, do nothing.
+
+    if not is_market_hours() and not getattr(settings, "force_market_updates", False):
+        return  # Markets are closed and not forcing updates.
 
     session_factory = _get_session_factory()
     try:
+        logger.debug("Running watchman cycle...")
         async with session_factory() as session:
             triggered = await run_watchman_cycle(session, mock=settings.ingestion_mock_mode)
             await session.commit()
@@ -148,16 +153,16 @@ async def _watchman_job():
 
 
 def _schedule_watchman():
-    """A-FIX-10: Start APScheduler with Watchman job (15 min). Handles exceptions, logs failures, no zombie loop."""
+    """A-FIX-10: Start APScheduler with Watchman job. A-OPS-07: Interval from settings.watchman_interval_minutes."""
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
     global _watchman_scheduler
+    interval_minutes = getattr(settings, "watchman_interval_minutes", 15)
     _watchman_scheduler = AsyncIOScheduler()
-    # AsyncIOScheduler will call _watchman_job() and await the coroutine
     _watchman_scheduler.add_job(
         _watchman_job,
         "interval",
-        minutes=15,
+        minutes=interval_minutes,
         id="watchman_cycle",
         max_instances=1,
         coalesce=True,
@@ -168,6 +173,11 @@ def _schedule_watchman():
 
 @app.on_event("startup")
 async def startup():
+    logging.basicConfig(
+        level=logging.DEBUG if settings.backend_debug else logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    logger.info(f"Starting up. Debug Mode: {settings.backend_debug}")
     await init_db(_get_engine())
     _schedule_watchman()
 
@@ -436,6 +446,10 @@ async def list_positions(
             "risk_rules": p.risk_rules,
             "last_heartbeat": p.last_heartbeat,
             "created_at": p.created_at.isoformat() if p.created_at else None,
+            "market_value": p.market_value,
+            "unrealized_pnl": p.unrealized_pnl,
+            "return_pct": p.return_pct,
+            "greeks": p.greeks,
         }
         for p in rows
     ]
@@ -511,8 +525,16 @@ async def delete_position(
 
 @app.get("/heartbeat")
 async def heartbeat():
-    """A-P2-08: System heartbeat (also used by Watchman every 4h)."""
-    return get_heartbeat_message()
+    """A-P2-08: System heartbeat (also used by Watchman every 4h). A-OPS-06: Includes market_status (OPEN|CLOSED|FORCED)."""
+    from app.market_hours import is_market_hours
+    msg = get_heartbeat_message()
+    if is_market_hours():
+        market_status = "OPEN"
+    elif getattr(settings, "force_market_updates", False):
+        market_status = "FORCED"
+    else:
+        market_status = "CLOSED"
+    return {**msg, "market_status": market_status}
 
 
 @app.post("/analyze/batch")
