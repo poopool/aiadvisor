@@ -174,22 +174,7 @@ def run_analysis(
             "recommendation": None,
         }
 
-    # A-P5-05: Sector value exposure — block if sector would exceed MAX_SECTOR_ALLOCATION
-    sector = (analysis_payload or {}).get("sector") or "Unknown"
-    new_capital = float(strike) * 100 * 1  # strike * 100 * contracts
-    from app.services.universe import sector_value_exposure_allowed
-    if not sector_value_exposure_allowed(
-        db, sector, new_capital, getattr(settings, "max_sector_allocation_pct", 0.70)
-    ):
-        return {
-            "ticker": ticker.upper(),
-            "timestamp": timestamp,
-            "regime": regime,
-            "no_trade": True,
-            "reason": "NO_TRADE: Sector value exposure would exceed max allocation.",
-            "analysis": analysis_payload,
-            "recommendation": None,
-        }
+    # A-P5-05: Sector value exposure is enforced at the API layer (main.py) before persisting; not duplicated here.
 
     safety_ok = strike < (price - expected_move_1sd)
     safety_check = "Strike is outside 1-SD expected move" if safety_ok else "Strike within 1-SD; review manually"

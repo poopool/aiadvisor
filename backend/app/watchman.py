@@ -45,7 +45,7 @@ async def get_mark_price_for_position(
         return Decimal("3.40"), Decimal("175.50"), now
     from app.config import settings
     from app.services.providers import get_market_data_provider
-    provider = get_market_data_provider(mock=False, polygon_api_key=settings.polygon_api_key or "")
+    provider = get_market_data_provider(mock=False)
     try:
         ed = entry_data or {}
         strike = ed.get("short_strike")
@@ -110,7 +110,7 @@ async def run_watchman_cycle(db: AsyncSession, *, mock: bool = True) -> list[dic
         try:
             from app.config import settings
             from app.services.providers import get_market_data_provider
-            provider = get_market_data_provider(mock=mock, polygon_api_key=settings.polygon_api_key or "")
+            provider = get_market_data_provider(mock=mock)
             greeks = provider.get_greeks_for_position(
                 pos.ticker, float(strike), expiry_date_str or "", strategy or ""
             )

@@ -30,7 +30,7 @@ from app.analysis import run_analysis
 from app.watchman import run_watchman_cycle, get_heartbeat_message
 from app.batch_analysis import run_batch_analysis
 from app.services.ingestion import fetch_market_data, persist_market_data
-from app.schemas import ManualPositionCreate
+from app.schemas import ManualPositionCreate, Position
 
 # Database (import after path fix)
 from database.session import get_engine, get_session_factory, init_db
@@ -428,29 +428,29 @@ async def reject_recommendation(
     return {"ok": True, "recommendation_id": str(rec.id)}
 
 
-@app.get("/positions")
+@app.get("/positions", response_model=list[Position])
 async def list_positions(
     db: AsyncSession = Depends(get_db),
 ):
-    """List active positions for the Watchtower (lifecycle_stage != CLOSED)."""
+    """List active positions for the Watchtower (lifecycle_stage != CLOSED). A-FIX-17: Response conforms to Position schema."""
     q = select(ActivePosition).where(ActivePosition.lifecycle_stage != "CLOSED").order_by(ActivePosition.created_at.desc())
     result = await db.execute(q)
     rows = result.scalars().all()
     return [
-        {
-            "id": str(p.id),
-            "ticker": p.ticker,
-            "status": p.status,
-            "lifecycle_stage": p.lifecycle_stage,
-            "entry_data": p.entry_data,
-            "risk_rules": p.risk_rules,
-            "last_heartbeat": p.last_heartbeat,
-            "created_at": p.created_at.isoformat() if p.created_at else None,
-            "market_value": p.market_value,
-            "unrealized_pnl": p.unrealized_pnl,
-            "return_pct": p.return_pct,
-            "greeks": p.greeks,
-        }
+        Position(
+            id=str(p.id),
+            ticker=p.ticker,
+            status=p.status,
+            lifecycle_stage=p.lifecycle_stage,
+            entry_data=p.entry_data,
+            risk_rules=p.risk_rules,
+            last_heartbeat=p.last_heartbeat,
+            created_at=p.created_at.isoformat() if p.created_at else None,
+            market_value=p.market_value,
+            unrealized_pnl=p.unrealized_pnl,
+            return_pct=p.return_pct,
+            greeks=p.greeks,
+        )
         for p in rows
     ]
 

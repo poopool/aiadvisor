@@ -1,6 +1,6 @@
 # AI Advisor Bot
 
-Semi-autonomous options analytics engine: **Phase 0–6**, **Phase 8**, and **Phase 11** (excluding Phase 7 GCP). See **PROJECT_CONTEXT.md** for the full spec and backlog.
+Semi-autonomous options analytics engine: **Phase 0–6**, **Phase 8**, **Phase 11**, and **Phase 12** (excluding Phase 7 GCP). See **PROJECT_CONTEXT.md** for the full spec and backlog.
 
 ## Features (by phase)
 
@@ -14,6 +14,7 @@ Semi-autonomous options analytics engine: **Phase 0–6**, **Phase 8**, and **Ph
 - **Phase 6 (Institutional Mechanics)**: **Term structure** (IV/NATR at target expiry); **25Δ skew gate** (block Short Put if skew &gt; threshold).
 - **Phase 8 (UI/UX Command Center)**: **Dark mode** (Slate-950/Zinc); **sidebar** (Dashboard, Analyst, Queue, Watchtower); **monospace** for financial data; **/analyst** (manual ticker analysis, result card, Open in Queue / Dismiss); **Dashboard /** (heartbeat, quick stats, batch trigger); **enhanced tables** (badges, expandable rows, copy contract ID); **toasts** (sonner) for Approve/Reject/Analysis/Batch.
 - **Phase 11 (Watchtower 2.0 — Robinhood Parity)**: **Backend P&amp;L** (market_value, unrealized_pnl, return_pct in Watchman); **live Greeks** (Delta, Theta, Gamma via `MarketDataProvider.get_greeks_for_position`, stored in `active_positions.greeks`); **Watchtower UI** (card layout, portfolio summary header, expandable position details with Avg Cost, Mark, Total Return, Portfolio Diversity %, Greeks).
+- **Phase 12 (Multi-Provider Support &amp; Parity)**: **Provider config** (`DATA_PROVIDER` = POLYGON | TRADIER, `TRADIER_API_TOKEN`); **TradierMarketDataProvider** (get_quote, get_daily_bars, get_option_chain, get_greeks_for_position); **Polygon Analyst gap fill** (get_daily_bars via aggs, get_option_chain via snapshot); **Greeks normalization** so Watchtower shows Delta/Theta/Gamma for either provider.
 
 ## Run the stack (Docker)
 
@@ -80,7 +81,7 @@ Migrations include `005_watchtower_pnl_greeks` (Phase 11: `market_value`, `unrea
 | Path | Purpose |
 |------|---------|
 | `backend/` | FastAPI app, QuantLaws, analysis pipeline, Watchman (APScheduler), batch runner |
-| `backend/app/services/` | Ingestion, options chain, regime, LLM synthesis, universe, rate limit, **providers** (MarketDataProvider), **macro_calendar** (MacroCalendarProvider) |
+| `backend/app/services/` | Ingestion, options chain, regime, LLM synthesis, universe, rate limit, **providers** (Mock, Polygon, Tradier MarketDataProvider), **technical_indicators** (SMA/ATR/RSI from bars), **macro_calendar** (MacroCalendarProvider) |
 | `database/` | SQLAlchemy models, async session, Alembic migrations |
 | `frontend/` | Next.js (React, Tailwind, React Query, sonner): Command Center (Dashboard, Analyst, Queue, Watchtower), dark mode, sidebar |
 | `docker-compose.yml` | Postgres, Redis, API, Frontend |
@@ -88,7 +89,9 @@ Migrations include `005_watchtower_pnl_greeks` (Phase 11: `market_value`, `unrea
 ## Environment
 
 - `DATABASE_URL` — PostgreSQL connection (async). Default: `postgresql+asyncpg://aiadvisor:aiadvisor_dev@localhost:5432/aiadvisor`
-- `INGESTION_MOCK_MODE` / `ingestion_mock_mode` — `true`: mock market/option data; `false`: use Polygon. When false, Watchman uses Polygon for mark/underlying price via `get_quote` (last trade + previous close fallback; A-FIX-16). Set `POLYGON_API_KEY` for live data.
+- `INGESTION_MOCK_MODE` / `ingestion_mock_mode` — `true`: mock market/option data; `false`: use configured provider (see `DATA_PROVIDER`). When false, Watchman uses the same provider for mark/underlying via `get_quote`. Set `POLYGON_API_KEY` for Polygon; set `TRADIER_API_TOKEN` and `DATA_PROVIDER=TRADIER` for Tradier.
+- `DATA_PROVIDER` — (Phase 12, default `POLYGON`) `POLYGON` or `TRADIER`. When `INGESTION_MOCK_MODE` is false, the API and Watchman use this provider for market data, option chains, and Greeks.
+- `TRADIER_API_TOKEN` — (Phase 12) Required when `DATA_PROVIDER=TRADIER`. Tradier API Bearer token for quotes, history, and options chains.
 - `NEXT_PUBLIC_API_URL` — Frontend: API base URL (default `http://localhost:8000` when using Docker).
 - `ALERT_WEBHOOK_URL` — (Optional) Watchman POSTs triggered alerts (21 DTE, stop loss, take profit, strike touch, data stale, ROLL_NEEDED) to this URL.
 - `HEARTBEAT_WEBHOOK_URL` — (Optional) Watchman POSTs the system heartbeat every 4 hours to this URL.

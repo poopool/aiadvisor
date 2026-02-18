@@ -1,8 +1,29 @@
 from datetime import date
 from decimal import Decimal
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, Field
+
+
+class Position(BaseModel):
+    """A-FIX-17: Response schema for GET /positions (Watchtower). Includes P&L fields from Phase 11."""
+
+    id: str
+    ticker: str
+    status: str
+    lifecycle_stage: str
+    entry_data: dict[str, Any]
+    risk_rules: dict[str, Any]
+    last_heartbeat: dict[str, Any] | None
+    created_at: str | None
+    market_value: Decimal | None = None
+    unrealized_pnl: Decimal | None = None
+    return_pct: Decimal | None = None
+    greeks: dict[str, float] | None = None
+
+    class Config:
+        from_attributes = True
 
 
 class StrategyType(str, Enum):

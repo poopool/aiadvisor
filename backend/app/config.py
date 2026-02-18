@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     # Ingestion: set to True to use mock data (no API calls)
     ingestion_mock_mode: bool = True
     polygon_api_key: str = ""
+    # Phase 12 (A-OPS-09): Multi-provider — "POLYGON" | "TRADIER"
+    data_provider: str = "POLYGON"
+    tradier_api_token: str = ""
     gemini_api_key: str = ""
     use_llm: bool = False
 
@@ -46,14 +49,10 @@ class Settings(BaseSettings):
     # Watchman data freshness (A-P2-07)
     data_stale_minutes: int = 60
 
-    # A-OPS-06 & A-OPS-07: System Control & Observability
-    force_market_updates: bool = False
-    watchman_interval_minutes: int = 15
-
-    # A-OPS-06: Force market updates when markets are closed (dev mode)
+    # A-OPS-06 / A-FIX-17: Force market updates when markets are closed (dev mode)
     force_market_updates: bool = False
 
-    # A-OPS-07: Configurable Watchman poll interval (minutes)
+    # A-OPS-07 / A-FIX-17: Configurable Watchman poll interval (minutes)
     watchman_interval_minutes: int = 15
 
     # A-OPS-08: Debug logging (DEBUG level when True, else INFO)

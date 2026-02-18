@@ -9,6 +9,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 type Greeks = { delta?: number; theta?: number; gamma?: number };
 
+/** Matches backend Position schema (GET /positions). A-FIX-17: includes market_value, unrealized_pnl, return_pct, greeks. */
 type Position = {
   id: string;
   ticker: string;

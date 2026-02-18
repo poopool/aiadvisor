@@ -18,7 +18,7 @@ def fetch_market_data(ticker: str, *, mock: bool = True, provider=None) -> dict[
     if provider is None:
         from app.config import settings
         from app.services.providers import get_market_data_provider
-        provider = get_market_data_provider(mock=mock, polygon_api_key=settings.polygon_api_key)
+        provider = get_market_data_provider(mock=mock)
     out = provider.get_daily_bars(ticker)
     # Ensure "latest" has Decimal for core logic
     if "latest" in out and out["latest"]:
