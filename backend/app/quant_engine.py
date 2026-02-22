@@ -10,7 +10,7 @@ from decimal import ROUND_HALF_UP
 
 def _get_iv_natr_min_ratio() -> Decimal:
     from app.config import settings
-    return Decimal(str(getattr(settings, "iv_natr_min_ratio", 1.0)))
+    return Decimal(str(getattr(settings, "iv_natr_min_ratio", 1.5)))
 
 
 def _get_dte_alert_threshold() -> int:
@@ -52,9 +52,12 @@ class QuantLaws:
         min_ratio: Decimal | None = None,
     ) -> tuple[Decimal, bool]:
         """
-        A-FIX-01 (Spec Patch v1.1): Ratio = IV_30d / ((ATR_14/Close * 100) * sqrt(252)).
-        Gate: Pass only if Ratio > 1.0.
-        IV_30d in decimal (e.g. 0.25); denominator in same scale.
+        IV/NATR Efficiency Ratio — compares annualized implied vol against annualized realized vol.
+        Ratio = IV_30d / (NATR_daily * sqrt(252))
+            where NATR_daily = (ATR_14_daily / Close).
+        Both numerator (IV_30d) and denominator are annualized, making the ratio scale-invariant.
+        Gate: Pass only if Ratio > 1.5 (configurable via iv_natr_min_ratio).
+        IV_30d in decimal form (e.g. 0.25 for 25%).
         """
         if close_price <= 0 or atr_14_daily < 0:
             return Decimal("0"), False

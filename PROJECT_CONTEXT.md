@@ -93,13 +93,19 @@ The system follows a containerized, 3-tier microservices architecture designed f
 -   **IV Source**: `IV_30d` refers to **30-Day Constant Maturity Implied Volatility** (interpolated), *not* the nearest expiration IV.
 -   **Math Precision**: All percentage inputs (IV, Yield) must be converted to decimals for calculation (e.g., 20% = 0.20).
 
+**Indicator Implementation Standards**:
+
+-   **ATR(14)**: Wilder's smoothed ATR. Seed = SMA of first 14 True Ranges; subsequent values use `ATR[n] = (ATR[n-1] × 13 + TR[n]) / 14`. Simple-average ATR is explicitly forbidden — it diverges from Bloomberg/ThinkorSwim values and invalidates backtested thresholds.
+-   **RSI(14)**: Wilder's smoothed RSI. Seed = SMA of first 14 gains/losses; subsequent values use `AvgGain[n] = (AvgGain[n-1] × 13 + Gain[n]) / 14` (same for losses). Simple-average RSI is explicitly forbidden for the same reason.
+
 **Formulas**:
 
--   **IV/NATR Ratio**:
-    $$Ratio = \frac{IV_{30d}}{\frac{ATR_{14\_Daily}}{Close\_Price} \times 100}$$
+-   **IV/NATR Efficiency Ratio** — compares annualized implied vol against annualized realized vol:
+    $$Ratio = \frac{IV_{30d}}{NATR_{daily} \times \sqrt{252}} \quad \text{where } NATR_{daily} = \frac{ATR_{14\_Daily}}{Close\_Price}$$
+    Both numerator (`IV_30d`, already annualized) and denominator (`NATR_daily × √252`, annualized daily realized vol) are in the same scale. Gate: **Ratio > 1.5** (configurable via `IV_NATR_MIN_RATIO`). The naïve formula without `√252` must not be used — it compares annualized implied vol against a daily realized vol proxy, producing a ratio ~16× too large.
 
--   **Expected Move (1-SD)**:
-    $$EM = Price \times IV_{30d} \times \sqrt{\frac{DTE}{365}}$$
+-   **Expected Move (1-SD)** — must use the **actual contract DTE**, not a synthetic midpoint:
+    $$EM = Price \times IV_{30d} \times \sqrt{\frac{DTE_{actual}}{365}}$$
 
 -   **RSI State**:
     -   `Overbought`: RSI_14_Daily > 70
@@ -165,7 +171,7 @@ Backlog is split into **Delivered** (implemented) and **Pending** (pre-productio
 | **A-UI-05** | System Notifications (Toasts) | Success/Error toasts on Approve, Reject, Analysis, heartbeat failure. | Frontend |
 | **A-P9-01** | Manual Position Management | POST /positions/manual, DELETE /positions/{id}; UI Add Manual Position + Delete per row with confirm. | Arch, Frontend |
 | **A-FIX-15** | Efficient Watchman Scheduling | _watchman_job exits early when market closed (is_market_hours). | Arch |
-| **A-FIX-01** | Fix IV/NATR Logic | Ratio = IV_30d / ((ATR_14/Close*100)*sqrt(252)); gate > 1.0. | Trader |
+| **A-FIX-01** | Fix IV/NATR Logic | Ratio = IV_30d / ((ATR_14/Close*100)*sqrt(252)); gate > **1.5** (configurable via `IV_NATR_MIN_RATIO`). | Trader |
 | **A-FIX-02** | Refine Liquidity Gates | Stock ADV > 5M; Option (Ask−Bid)/Bid < 0.05 (5%). | Trader |
 | **A-FIX-03** | Hard Earnings Exclusion | NO_TRADE if earnings between Today and Expiry. | Trader |
 | **A-FIX-04** | Ticker-Level Trend Filter | Block Short Put if Ticker_Price < Ticker_SMA_50. | Trader |
@@ -196,6 +202,15 @@ Backlog is split into **Delivered** (implemented) and **Pending** (pre-productio
 | **A-FIX-26** | Strategy Branch Correctness | Remove unreachable bearish branch; `SHORT_CALL` only on bearish + overbought condition. | Trader |
 | **A-FIX-27** | Batch Error Visibility | Batch analysis logs `DataFetchError` and unexpected failures (no silent bare-except swallowing). | Arch |
 | **A-FIX-28** | ActivePosition Audit Timestamp | `active_positions.updated_at` auto-updates on ORM mutations (`onupdate=now()`). | Arch |
+| **A-AUDIT-01** | IV/NATR Gate Threshold Correction | Default `IV_NATR_MIN_RATIO` raised from 1.0 to 1.5 (per spec §3 Efficiency Gate). | Trader |
+| **A-AUDIT-02** | Expected Move Uses Actual Contract DTE | `calculate_expected_move` called after contract selection with real `dte_days`; synthetic 37-day midpoint removed. Safety check now valid. | Quant |
+| **A-AUDIT-03** | 21 DTE Alert Operationalized | `check_21_dte` called with real contract `dte_days`; `dte_status` and `dte_days` included in `analysis` payload (was silently discarded). | Trader |
+| **A-AUDIT-04** | Stop-Loss Trigger Emitted | `stop_loss_trigger = credit_est × 3` computed and returned in recommendation payload; added to `ManualPositionCreate` schema. | Trader |
+| **A-AUDIT-05** | Profit Target BTC Emitted | `profit_target_btc = credit_est × 0.50` computed and returned in recommendation payload; added to `ManualPositionCreate` schema. | Trader |
+| **A-AUDIT-06** | Remove Hardcoded iv_rank Placeholder | `iv_rank: 65` magic constant removed from analysis payload; field omitted until real 52-week IV Rank lookup is implemented. | Quant |
+| **A-AUDIT-07** | Wilder's Smoothed ATR(14) | `compute_atr_14` rewritten: seed = SMA of first 14 TRs; then `ATR = (prev×13 + TR) / 14`. Matches Bloomberg/TOS output. Simple-average ATR removed. | Quant |
+| **A-AUDIT-08** | Wilder's Smoothed RSI(14) | `compute_rsi_14` rewritten: same Wilder's EMA for avg gain/loss. Matches Bloomberg/TOS output. Simple-average RSI removed. | Quant |
+| **A-AUDIT-09** | LLM Anti-Hallucination Prompt Rewrite | Role in `system_instruction`; 8 explicit prohibitions (no TA, no Greeks, no derived numbers); structured JSON output; `temperature=0.0`; JSON-serialized quant data; `unstructured_context` parameter separates news from quant payload. | Arch |
 
 ### Pending
 
@@ -218,6 +233,14 @@ Backlog is split into **Delivered** (implemented) and **Pending** (pre-productio
 ## 6) Data Structures (Canonical)
 
 ### 6.1 Trade Recommendation Schema (Phase 1 Output)
+
+Notes on computed fields:
+- `expected_move_1sd`: computed with the **actual contract DTE** (not a synthetic midpoint). Added to `analysis` only after a contract is selected.
+- `dte_status`: `"OK"` or `"ALERT"`. `"ALERT"` fires when `dte_days ≤ DTE_ALERT_THRESHOLD` (default 21). Added to `analysis` only after a contract is selected.
+- `stop_loss_trigger`: hard risk cap — close position if mark ≥ `credit_est × 3`.
+- `profit_target_btc`: 50% profit rule — close position if mark ≤ `credit_est × 0.50`.
+- `iv_rank` is **not included** until a real IV Rank computation (52-week IV range lookup) is wired into the ingestion pipeline. A placeholder value must never be injected.
+
 ```json
 {
   "ticker": "NVDA",
@@ -227,10 +250,15 @@ Backlog is split into **Delivered** (implemented) and **Pending** (pre-productio
     "price": 175.50,
     "rsi_14": 28.5,
     "trend": "bullish",
-    "iv_rank": 65,
     "iv_natr_ratio": 2.1,
+    "iv_natr_ratio_at_expiry": 1.9,
     "expected_move_1sd": 12.40,
-    "earnings_date": "2026-02-27"
+    "dte_days": 38,
+    "dte_status": "OK",
+    "skew_25d_points": 3.2,
+    "annualized_yield": 0.28,
+    "earnings_date": null,
+    "sector": "Information Technology"
   },
   "recommendation": {
     "strategy": "SHORT_PUT",
@@ -239,8 +267,11 @@ Backlog is split into **Delivered** (implemented) and **Pending** (pre-productio
     "expiry": "2026-03-20",
     "delta": -0.20,
     "credit_est": 3.50,
+    "buy_to_close_est": 3.70,
+    "stop_loss_trigger": 10.50,
+    "profit_target_btc": 1.75,
     "safety_check": "Strike is outside 1-SD expected move",
-    "thesis": "NVDA is oversold (RSI 28) but in a macro bull trend. Volatility is expensive (Ratio 2.1). Strike selected at 0.20 Delta, providing buffer beyond expected move."
+    "thesis": "..."
   }
 }
 ```

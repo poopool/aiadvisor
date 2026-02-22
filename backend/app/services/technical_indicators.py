@@ -22,46 +22,65 @@ def compute_sma(closes: list[Decimal], period: int) -> Decimal | None:
 
 
 def compute_atr_14(bars: list[dict]) -> Decimal | None:
-    """ATR(14) from bars with keys h, l, c (high, low, close). Uses last 15 bars (14 ranges)."""
+    """
+    ATR(14) using Wilder's smoothing (canonical definition).
+    Requires at least 15 bars (14 true-range periods + 1 prior close).
+    Seed: simple average of the first 14 TRs; then Wilder's EMA:
+        ATR[n] = (ATR[n-1] * 13 + TR[n]) / 14
+    This matches Bloomberg / ThinkorSwim output.
+    """
     if len(bars) < 15:
         return None
-    trs = []
-    for i in range(1, len(bars)):
-        h = _to_decimal(bars[-i].get("h") or bars[-i].get("high") or 0)
-        l = _to_decimal(bars[-i].get("l") or bars[-i].get("low") or 0)
-        prev_c = _to_decimal(bars[-(i + 1)].get("c") or bars[-(i + 1)].get("close") or 0)
-        tr = max(
-            h - l,
-            abs(h - prev_c),
-            abs(l - prev_c),
-        )
-        trs.append(tr)
-        if len(trs) >= 14:
-            break
+
+    def _tr(bar: dict, prev_bar: dict) -> Decimal:
+        h = _to_decimal(bar.get("h") or bar.get("high") or 0)
+        l = _to_decimal(bar.get("l") or bar.get("low") or 0)
+        prev_c = _to_decimal(prev_bar.get("c") or prev_bar.get("close") or 0)
+        return max(h - l, abs(h - prev_c), abs(l - prev_c))
+
+    # Compute all TRs chronologically (bars are oldest-first).
+    trs = [_tr(bars[i], bars[i - 1]) for i in range(1, len(bars))]
     if len(trs) < 14:
         return None
-    return sum(trs) / len(trs)
+
+    # Seed: SMA of the first 14 TRs.
+    atr = sum(trs[:14]) / Decimal("14")
+
+    # Wilder's EMA over remaining TRs.
+    for tr in trs[14:]:
+        atr = (atr * Decimal("13") + tr) / Decimal("14")
+
+    return atr
 
 
 def compute_rsi_14(closes: list[Decimal]) -> Decimal | None:
-    """RSI(14) from close prices. Needs at least 15 closes."""
+    """
+    RSI(14) using Wilder's smoothing (canonical definition).
+    Requires at least 15 closes (14 change periods).
+    Seed: simple average of the first 14 gains and losses;
+    then Wilder's EMA: avg_gain[n] = (avg_gain[n-1]*13 + gain[n]) / 14.
+    This matches Bloomberg / ThinkorSwim output.
+    """
     if len(closes) < 15:
         return None
-    gains, losses = [], []
-    for i in range(len(closes) - 14, len(closes)):
-        ch = closes[i] - closes[i - 1]
-        if ch > 0:
-            gains.append(ch)
-            losses.append(Decimal("0"))
-        else:
-            gains.append(Decimal("0"))
-            losses.append(-ch)
-    avg_gain = sum(gains) / 14
-    avg_loss = sum(losses) / 14
+
+    changes = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+    gains = [c if c > 0 else Decimal("0") for c in changes]
+    losses = [-c if c < 0 else Decimal("0") for c in changes]
+
+    # Seed: SMA of first 14 periods.
+    avg_gain = sum(gains[:14]) / Decimal("14")
+    avg_loss = sum(losses[:14]) / Decimal("14")
+
+    # Wilder's EMA over remaining periods.
+    for g, l in zip(gains[14:], losses[14:]):
+        avg_gain = (avg_gain * Decimal("13") + g) / Decimal("14")
+        avg_loss = (avg_loss * Decimal("13") + l) / Decimal("14")
+
     if avg_loss == 0:
         return Decimal("100")
     rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
+    rsi = Decimal("100") - (Decimal("100") / (Decimal("1") + rs))
     return Decimal(str(round(rsi, 2)))
 
 
