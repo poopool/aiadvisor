@@ -13,6 +13,44 @@ import requests
 from app.services.technical_indicators import bars_to_latest
 
 
+def _coerce_epoch_to_datetime(value: int | float | None) -> datetime | None:
+    """Convert epoch (sec/ms/us/ns) to UTC datetime."""
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if v <= 0:
+        return None
+    # Heuristic by order of magnitude
+    if v > 1e18:  # ns
+        v /= 1e9
+    elif v > 1e15:  # us
+        v /= 1e6
+    elif v > 1e12:  # ms
+        v /= 1e3
+    return datetime.fromtimestamp(v, tz=timezone.utc)
+
+
+def _extract_tradier_quote_timestamp(quote: dict[str, Any]) -> datetime:
+    """Best-effort extraction of quote timestamp from Tradier payload."""
+    for key in ("trade_date", "bid_date", "ask_date"):
+        ts = _coerce_epoch_to_datetime(quote.get(key))
+        if ts is not None:
+            return ts
+    return datetime.now(timezone.utc)
+
+
+def _extract_polygon_trade_timestamp(result: dict[str, Any]) -> datetime | None:
+    """Best-effort extraction of trade timestamp from Polygon last-trade payload."""
+    for key in ("sip_timestamp", "participant_timestamp", "trf_timestamp", "t"):
+        ts = _coerce_epoch_to_datetime(result.get(key))
+        if ts is not None:
+            return ts
+    return None
+
+
 class MarketDataProvider(ABC):
     """A-FIX-08: Abstract provider for market and option data. Implementations: Mock, Polygon, etc."""
 
@@ -33,8 +71,8 @@ class MarketDataProvider(ABC):
         strike: float | None = None,
         expiry_date: str | None = None,
         strategy: str | None = None,
-    ) -> tuple[Decimal, Decimal]:
-        """(underlying_price, option_mark). Option context (strike, expiry_date, strategy) required for real option mark."""
+    ) -> tuple[Decimal, Decimal, datetime]:
+        """(underlying_price, option_mark, quote_timestamp_utc)."""
         raise NotImplementedError("Quote not implemented for this provider.")
 
     def get_greeks_for_position(
@@ -87,9 +125,9 @@ class MockMarketDataProvider(MarketDataProvider):
         strike: float | None = None,
         expiry_date: str | None = None,
         strategy: str | None = None,
-    ) -> tuple[Decimal, Decimal]:
-        """A-P2-02: (underlying_price, option_mark) for Watchman mark/price polling. Ignores option args."""
-        return Decimal("175.50"), Decimal("3.40")
+    ) -> tuple[Decimal, Decimal, datetime]:
+        """A-P2-02: (underlying_price, option_mark, quote_timestamp) for Watchman polling."""
+        return Decimal("175.50"), Decimal("3.40"), datetime.now(timezone.utc)
 
     def get_greeks_for_position(
         self, ticker: str, strike: float, expiry_date: str, strategy: str
@@ -114,8 +152,8 @@ class TradierMarketDataProvider(MarketDataProvider):
         strike: float | None = None,
         expiry_date: str | None = None,
         strategy: str | None = None,
-    ) -> tuple[Decimal, Decimal]:
-        """A-FIX-18: (underlying_price, option_mark). GET /markets/quotes; mark from last or (bid+ask)/2."""
+    ) -> tuple[Decimal, Decimal, datetime]:
+        """A-FIX-18: (underlying_price, option_mark, quote_timestamp). GET /markets/quotes."""
         sym = ticker.upper()
         symbols = [sym]
         if strike is not None and expiry_date and strategy:
@@ -140,9 +178,10 @@ class TradierMarketDataProvider(MarketDataProvider):
                 raise NotImplementedError(f"Tradier: no underlying quote for {sym}")
             underlying_price = underlying_q.get("last") or underlying_q.get("bid") or underlying_q.get("ask") or 0
             underlying_price = Decimal(str(underlying_price))
+            quote_timestamp = _extract_tradier_quote_timestamp(underlying_q)
 
             if len(symbols) == 1:
-                return underlying_price, Decimal("0")
+                return underlying_price, Decimal("0"), quote_timestamp
 
             opt_sym = symbols[1]
             opt_q = by_symbol.get(opt_sym)
@@ -161,7 +200,8 @@ class TradierMarketDataProvider(MarketDataProvider):
                 option_mark = Decimal(str(ask))
             else:
                 raise NotImplementedError(f"Tradier: no mark for option {opt_sym}")
-            return underlying_price, option_mark
+            option_timestamp = _extract_tradier_quote_timestamp(opt_q) or quote_timestamp
+            return underlying_price, option_mark, option_timestamp
         except requests.RequestException as e:
             raise NotImplementedError(f"Tradier quote failed: {e}") from e
 
@@ -331,8 +371,8 @@ class PolygonMarketDataProvider(MarketDataProvider):
     def __init__(self, api_key: str):
         self._api_key = api_key
 
-    def _get_last_trade(self, ticker: str) -> float | None:
-        """Return last trade price or None. Works for stocks and options (O:...)."""
+    def _get_last_trade(self, ticker: str) -> tuple[float | None, datetime | None]:
+        """Return (last trade price, trade timestamp) or (None, None)."""
         url = f"{self._BASE}/v2/last/trade/{ticker}"
         try:
             r = requests.get(url, params={"apiKey": self._api_key}, timeout=10)
@@ -340,10 +380,10 @@ class PolygonMarketDataProvider(MarketDataProvider):
             data = r.json()
             res = data.get("results") or data.get("result")
             if res is not None and isinstance(res, dict) and "p" in res:
-                return float(res["p"])
-            return None
+                return float(res["p"]), _extract_polygon_trade_timestamp(res)
+            return None, None
         except (requests.RequestException, KeyError, TypeError, ValueError):
-            return None
+            return None, None
 
     def _get_previous_close(self, ticker: str) -> float | None:
         """Return previous session close price. Works for stocks and options. results is an array."""
@@ -368,13 +408,14 @@ class PolygonMarketDataProvider(MarketDataProvider):
         strike: float | None = None,
         expiry_date: str | None = None,
         strategy: str | None = None,
-    ) -> tuple[Decimal, Decimal]:
-        """A-FIX-16: (underlying_price, option_mark). Last trade; fallback to previous close if no trade today."""
+    ) -> tuple[Decimal, Decimal, datetime]:
+        """A-FIX-16: (underlying_price, option_mark, quote_timestamp)."""
         underlying = ticker.upper()
         # Underlying: last trade then previous close fallback
-        underlying_price = self._get_last_trade(underlying)
+        underlying_price, underlying_ts = self._get_last_trade(underlying)
         if underlying_price is None:
             underlying_price = self._get_previous_close(underlying)
+            underlying_ts = datetime.now(timezone.utc) - timedelta(days=1)
         if underlying_price is None:
             raise NotImplementedError(
                 f"Polygon: no last trade or previous close for underlying {underlying}"
@@ -382,18 +423,19 @@ class PolygonMarketDataProvider(MarketDataProvider):
 
         if strike is None or not expiry_date or not strategy:
             # No option context: return underlying only; option_mark as zero (caller may not use)
-            return Decimal(str(underlying_price)), Decimal("0")
+            return Decimal(str(underlying_price)), Decimal("0"), (underlying_ts or datetime.now(timezone.utc))
 
         option_ticker = _build_polygon_option_ticker(underlying, expiry_date, strategy, strike)
-        option_mark = self._get_last_trade(option_ticker)
+        option_mark, option_ts = self._get_last_trade(option_ticker)
         if option_mark is None:
             option_mark = self._get_previous_close(option_ticker)
+            option_ts = datetime.now(timezone.utc) - timedelta(days=1)
         if option_mark is None:
             raise NotImplementedError(
                 f"Polygon: no last trade or previous close for option {option_ticker}"
             )
 
-        return Decimal(str(underlying_price)), Decimal(str(option_mark))
+        return Decimal(str(underlying_price)), Decimal(str(option_mark)), (option_ts or datetime.now(timezone.utc))
 
     def get_daily_bars(self, ticker: str) -> dict[str, Any]:
         """A-FIX-20: GET /v2/aggs/ticker/.../range/1/day; compute latest (close, sma_50, sma_200, atr_14, rsi_14)."""

@@ -149,7 +149,7 @@ Backlog is split into **Delivered** (implemented) and **Pending** (pre-productio
 | **A-P5-01** | Macro Calendar Provider | High-impact events (CPI, NFP, FOMC). Gate: block entries if event within MACRO_LOOKAHEAD_HOURS (48h). | Arch |
 | **A-P5-02** | Externalized Strategy Config | All thresholds from config (no hardcoded RSI/Yield/etc.). | Arch |
 | **A-P5-03** | Refined Entry Gates | RSI < RSI_ENTRY_THRESHOLD (40); Annualized Yield > MIN_YIELD_PCT (0.20). | Trader |
-| **A-P5-04** | Income Shield (Roll Logic) | ROLL_NEEDED if (Price−Strike)/Strike > ROLL_ITM_PCT and DTE < ROLL_DTE_TRIGGER (14). | Trader |
+| **A-P5-04** | Income Shield (Roll Logic) | For SHORT_PUT, ROLL_NEEDED if (Strike−Price)/Strike > ROLL_ITM_PCT and DTE < ROLL_DTE_TRIGGER (14). | Trader |
 | **A-P5-05** | Sector Value Exposure | Track capital_deployed; block if sector sum > MAX_SECTOR_ALLOCATION (70%). | Arch |
 | **A-FIX-10** | Robust Watchman Scheduler | APScheduler; exceptions logged; no zombie loop. | Arch |
 | **A-FIX-11** | Remove Silent Mock Fallbacks | DataFetchError instead of fake data on NotImplementedError. | Dev |
@@ -189,6 +189,13 @@ Backlog is split into **Delivered** (implemented) and **Pending** (pre-productio
 | **A-FIX-19** | Tradier: Analyst (Chains & History) | get_daily_bars, get_option_chain; map to latest bar and chain schema. | Dev |
 | **A-FIX-20** | Polygon: Analyst Gap Fill | get_daily_bars and get_option_chain in PolygonMarketDataProvider. | Dev |
 | **A-FIX-21** | Greeks Normalization | Both providers return delta, theta, gamma; Watchtower shows Greeks. | Quant |
+| **A-FIX-22** | No Synthetic Contract Fallback | If no valid contract/chain candidate is found, raise DataFetchError (never inject synthetic credit/mark values). | Dev |
+| **A-FIX-23** | Data Freshness by Quote Timestamp | Watchman heartbeat stores `mark_timestamp`; stale check uses provider quote timestamp and emits `CRITICAL_DATA_STALE`. | Arch |
+| **A-FIX-24** | Lifecycle State Integrity | `TAKE_PROFIT` sets `CLOSING_URGENT`; auto force-close transitions position to `CLOSED`. | Trader |
+| **A-FIX-25** | Decimal-Safe Position Payloads | Financial fields in recommendation/position payloads remain Decimal-safe (no float coercion in storage paths). | Dev |
+| **A-FIX-26** | Strategy Branch Correctness | Remove unreachable bearish branch; `SHORT_CALL` only on bearish + overbought condition. | Trader |
+| **A-FIX-27** | Batch Error Visibility | Batch analysis logs `DataFetchError` and unexpected failures (no silent bare-except swallowing). | Arch |
+| **A-FIX-28** | ActivePosition Audit Timestamp | `active_positions.updated_at` auto-updates on ORM mutations (`onupdate=now()`). | Arch |
 
 ### Pending
 
@@ -201,6 +208,10 @@ Backlog is split into **Delivered** (implemented) and **Pending** (pre-productio
 | **A-OPS-03** | External Secrets Management | No hardcoded passwords in docker-compose; secrets from Environment Variables only. | Ops |
 | **A-OPS-04** | Structured Logging | JSON-structured logger (e.g. structlog): severity, timestamp, correlation_id for Cloud Logging. | Ops |
 | **A-OPS-05** | Dedicated Worker Service | Watchman in separate worker entrypoint; API and Worker as distinct services in docker-compose and Cloud Run. | Arch |
+| **A-OPS-10** | Cloud Scheduler Watchman Trigger | Replace in-process APScheduler in Cloud Run with authenticated Cloud Scheduler hit to internal Watchman endpoint. | Arch |
+| **A-OPS-11** | Distributed Heartbeat Clock | Persist heartbeat cadence in shared store (Redis/DB) instead of process-local monotonic timer. | Arch |
+| **A-OPS-12** | FastAPI Lifespan Migration | Replace deprecated `@app.on_event("startup")` with `lifespan` startup/shutdown orchestration. | Arch |
+| **A-OPS-13** | Broker Fill State Machine | Enforce lifecycle transitions `PENDING_ENTRY → MONITORING → CLOSING_URGENT → CLOSED` with explicit fill confirmation path. | Arch, Trader |
 
 ---
 
@@ -246,20 +257,23 @@ This schema represents the "Source of Truth" for the Watchman service. It must b
   "lifecycle_stage": "MONITORING",
   "entry_data": {
     "strategy": "SHORT_PUT",
-    "short_strike": 160.00,
+    "short_strike": "160.00",
     "expiry_date": "2026-03-20",
-    "entry_price": 3.50,
+    "entry_price": "3.50",
     "entry_timestamp": "2026-02-09T14:30:00Z",
-    "contracts": 1
+    "contracts": 1,
+    "capital_deployed": "16000.00",
+    "sector": "Information Technology"
   },
   "risk_rules": {
-    "stop_loss_price": 10.50,
-    "take_profit_price": 1.75,
+    "stop_loss_price": "10.50",
+    "take_profit_price": "1.75",
     "max_dte_hold": 21,
     "force_close_date": "2026-02-27"
   },
   "last_heartbeat": {
     "timestamp": "2026-02-10T09:00:00Z",
+    "mark_timestamp": "2026-02-10T08:59:31Z",
     "mark_price": 3.40,
     "data_freshness_status": "OK"
   }

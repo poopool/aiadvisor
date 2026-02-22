@@ -3,7 +3,7 @@
 # A-OPS-08: Debug logging (logger.debug for cycle flow)
 
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -14,15 +14,15 @@ logger = logging.getLogger("watchman")
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import ActivePosition, AlertLog
-from app.quant_engine import QuantLaws
-
-
 # Mark price source: mock or from ingestion; > 60 min old → DATA_STALE
 # A-P5-02: DATA_STALE_MINUTES could be from config; A-FIX-11: no silent fallback — raise DataFetchError
 
 
 class DataFetchError(Exception):
     """A-FIX-11: Raised when mark/quote cannot be fetched (e.g. provider not implemented). No fake data."""
+
+
+ALERT_CRITICAL_DATA_STALE = "CRITICAL_DATA_STALE"
 
 
 def _data_stale_minutes() -> int:
@@ -51,10 +51,16 @@ async def get_mark_price_for_position(
         strike = ed.get("short_strike")
         expiry_date = ed.get("expiry_date")
         strategy = ed.get("strategy")
-        underlying_price, option_mark = provider.get_quote(
+        quote = provider.get_quote(
             ticker, strike=strike, expiry_date=expiry_date, strategy=strategy
         )
-        return option_mark, underlying_price, now
+        # Providers may return either (underlying, option) or (underlying, option, quote_timestamp).
+        if len(quote) == 3:
+            underlying_price, option_mark, quote_timestamp = quote
+        else:
+            underlying_price, option_mark = quote
+            quote_timestamp = now
+        return option_mark, underlying_price, quote_timestamp
     except NotImplementedError as e:
         raise DataFetchError(f"Quote not implemented for provider (ticker={ticker})") from e
 
@@ -76,9 +82,9 @@ async def run_watchman_cycle(db: AsyncSession, *, mock: bool = True) -> list[dic
             mark, underlying_price, fetched_at = await get_mark_price_for_position(
                 pos.ticker, entry_data=pos.entry_data or {}, mock=mock
             )
-        except DataFetchError:
-            # A-FIX-11: Skip this position, do not use fake data; continue with others
-            logger.debug("Skipping %s: quote not available", pos.ticker)
+        except DataFetchError as e:
+            # A-FIX-11: Skip this position, do not use fake data; continue with others.
+            logger.warning("Skipping %s due to quote fetch failure: %s", pos.ticker, e)
             continue
         entry = pos.entry_data or {}
         risk = pos.risk_rules or {}
@@ -87,10 +93,13 @@ async def run_watchman_cycle(db: AsyncSession, *, mock: bool = True) -> list[dic
         expiry_date_str = entry.get("expiry_date")
         expiry_date = date.fromisoformat(expiry_date_str) if expiry_date_str else date.today()
 
+        strategy = entry.get("strategy")
+
         # Update last_heartbeat
         data_fresh = (datetime.now(timezone.utc) - fetched_at).total_seconds() / 60 <= _data_stale_minutes()
         pos.last_heartbeat = {
             "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "mark_timestamp": fetched_at.isoformat().replace("+00:00", "Z"),
             "mark_price": float(mark),
             "underlying_price": float(underlying_price),
             "data_freshness_status": "OK" if data_fresh else "STALE",
@@ -120,7 +129,6 @@ async def run_watchman_cycle(db: AsyncSession, *, mock: bool = True) -> list[dic
             pass  # leave pos.greeks unchanged if provider does not support or errors
 
         # A-P2-04 Strike Touch: underlying price crosses the short strike
-        strategy = entry.get("strategy")
         if strategy == "SHORT_PUT" and underlying_price <= strike:
             if await _ensure_alert_sent(db, pos.id, "STRIKE_TOUCH"):
                 triggered.append({"position_id": str(pos.id), "ticker": pos.ticker, "trigger": "STRIKE_TOUCH"})
@@ -150,21 +158,32 @@ async def run_watchman_cycle(db: AsyncSession, *, mock: bool = True) -> list[dic
         if take_profit_price and mark <= take_profit_price:
             if await _ensure_alert_sent(db, pos.id, "TAKE_PROFIT"):
                 triggered.append({"position_id": str(pos.id), "ticker": pos.ticker, "trigger": "TAKE_PROFIT"})
+            pos.lifecycle_stage = "CLOSING_URGENT"
 
         # A-P5-04: Income Shield (Roll Logic) — ROLL_NEEDED if (Price-Strike)/Strike > roll_itm_pct AND DTE < roll_dte_trigger
         from app.config import settings
         roll_itm_pct = Decimal(str(getattr(settings, "roll_itm_pct", 0.03)))
         roll_dte_trigger = getattr(settings, "roll_dte_trigger", 14)
-        if strike and strike > 0 and underlying_price > strike:
-            itm_ratio = (underlying_price - strike) / strike
+        if strategy == "SHORT_PUT" and strike and strike > 0 and underlying_price < strike:
+            itm_ratio = (strike - underlying_price) / strike
             if itm_ratio >= roll_itm_pct and dte < roll_dte_trigger:
                 if await _ensure_alert_sent(db, pos.id, "ROLL_NEEDED"):
                     triggered.append({"position_id": str(pos.id), "ticker": pos.ticker, "trigger": "ROLL_NEEDED"})
 
         # A-P2-07 Data freshness
         if not data_fresh:
-            if await _ensure_alert_sent(db, pos.id, "DATA_STALE"):
-                triggered.append({"position_id": str(pos.id), "ticker": pos.ticker, "trigger": "CRITICAL_DATA_STALE"})
+            if await _ensure_alert_sent(db, pos.id, ALERT_CRITICAL_DATA_STALE):
+                triggered.append({"position_id": str(pos.id), "ticker": pos.ticker, "trigger": ALERT_CRITICAL_DATA_STALE})
+
+        # Close positions automatically at force_close_date once they reached the forced date.
+        force_close_date_str = risk.get("force_close_date")
+        if force_close_date_str:
+            force_close_date = date.fromisoformat(force_close_date_str)
+            if date.today() >= force_close_date and pos.lifecycle_stage != "CLOSED":
+                pos.lifecycle_stage = "CLOSED"
+                pos.status = "CLOSED"
+                if await _ensure_alert_sent(db, pos.id, "FORCE_CLOSED"):
+                    triggered.append({"position_id": str(pos.id), "ticker": pos.ticker, "trigger": "FORCE_CLOSED"})
 
     await db.flush()
     return triggered

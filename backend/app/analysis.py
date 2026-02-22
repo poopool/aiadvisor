@@ -1,7 +1,7 @@
 # AI Advisor Bot — Analysis Pipeline (Phase 1)
 # A-P1-01 ingestion → A-P1-07 regime → A-P1-04 strategy → Efficiency Gate → contract (if not NONE) → thesis
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -9,9 +9,10 @@ from app.quant_engine import QuantLaws
 from app.strategy_selector import get_trend_state, get_rsi_state, select_strategy
 from app.services.ingestion import fetch_market_data
 from app.services.regime import check_spy_above_sma200
-from app.services.options import fetch_option_chain, select_strike_by_delta, get_iv_target_expiry, get_skew_25d
+from app.services.options import fetch_option_chain, select_strike_by_delta, get_skew_25d
 from app.services.llm_synthesis import synthesize_thesis
 from app.services.universe import hard_earnings_exclusion
+from app.watchman import DataFetchError
 
 DEFAULT_DTE_MIN, DEFAULT_DTE_MAX = 30, 45
 
@@ -102,10 +103,10 @@ def run_analysis(
         strike = Decimal(str(selected["strike"]))
         expiry_str = selected["expiry"]
         expiry_date = date.fromisoformat(expiry_str)
-        delta = float(selected.get("delta", -0.20))
+        delta = Decimal(str(selected.get("delta", -0.20)))
         # A-FIX-12: Use Bid for credit (selling), Ask for buy-to-close cost
-        credit_est = float(selected.get("bid", 0))
-        buy_to_close_est = float(selected.get("ask", 0))
+        credit_est = Decimal(str(selected.get("bid", 0) or 0))
+        buy_to_close_est = Decimal(str(selected.get("ask", 0) or 0))
         # A-P7-01: Use IV at target expiry for efficiency gate (not generic IV_30d)
         iv_target_expiry = float(selected.get("iv", iv_30d))
         iv_target_dec = Decimal(str(iv_target_expiry))
@@ -133,31 +134,25 @@ def run_analysis(
             }
         contract = f"{ticker.upper()}{expiry_date.strftime('%y%m%d')}P{int(strike * 1000):08d}"
     else:
-        strike = (price - expected_move_1sd).quantize(Decimal("0.01"))
-        if strike <= 0:
-            strike = price * Decimal("0.90")
-        expiry_date = date.today() + timedelta(days=dte)
-        strike = strike.quantize(Decimal("0.01"))
-        delta = -0.20
-        credit_est = 3.50
-        buy_to_close_est = 4.00
-        contract = f"{ticker.upper()}{expiry_date.strftime('%y%m%d')}P{int(strike * 1000):08d}"
+        raise DataFetchError(
+            f"No option contract found for {ticker.upper()} in target delta band (0.20-0.30)."
+        )
 
     # A-P5-03: Yield gate — Annualized_Yield > MIN_YIELD_PCT (e.g. 20%). Yield = (credit/strike)*(365/DTE)
     dte_days = (expiry_date - date.today()).days or 1
-    annualized_yield = (Decimal(str(credit_est)) / strike) * (Decimal("365") / Decimal(str(dte_days)))
+    annualized_yield = (credit_est / strike) * (Decimal("365") / Decimal(str(dte_days)))
     min_yield = Decimal(str(getattr(settings, "min_yield_pct", 0.20)))
     if strategy == "SHORT_PUT" and annualized_yield < min_yield:
         strategy = "NONE"
         recommendation_payload = {
             "strategy": "NONE",
-            "thesis": f"Yield gate failed: annualized yield {float(annualized_yield):.2%} < {float(min_yield):.0%}.",
+            "thesis": f"Yield gate failed: annualized yield {annualized_yield:.2%} < {min_yield:.0%}.",
         }
         return {
             "ticker": ticker.upper(),
             "timestamp": timestamp,
             "regime": regime,
-            "analysis": {**analysis_payload, "annualized_yield": float(annualized_yield)},
+            "analysis": {**analysis_payload, "annualized_yield": annualized_yield},
             "recommendation": recommendation_payload,
         }
 
@@ -178,16 +173,16 @@ def run_analysis(
 
     safety_ok = strike < (price - expected_move_1sd)
     safety_check = "Strike is outside 1-SD expected move" if safety_ok else "Strike within 1-SD; review manually"
-    analysis_payload["annualized_yield"] = float(annualized_yield)
+    analysis_payload["annualized_yield"] = annualized_yield
 
     recommendation_payload = {
         "strategy": strategy,
         "contract": contract,
-        "strike": float(strike),
+        "strike": strike,
         "expiry": expiry_date.isoformat(),
         "delta": delta,
-        "credit_est": round(credit_est, 2),
-        "buy_to_close_est": round(buy_to_close_est, 2),
+        "credit_est": credit_est.quantize(Decimal("0.01")),
+        "buy_to_close_est": buy_to_close_est.quantize(Decimal("0.01")),
         "safety_check": safety_check,
     }
 

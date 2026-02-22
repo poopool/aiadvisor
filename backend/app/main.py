@@ -18,7 +18,6 @@ from decimal import Decimal
 from uuid import UUID, uuid4
 import json
 
-from decimal import Decimal
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -335,7 +334,7 @@ async def list_recommendations(
             "id": str(r.id),
             "ticker": r.ticker,
             "strategy": r.strategy,
-            "strike": float(r.strike),
+            "strike": r.strike,
             "expiry": r.expiry.isoformat(),
             "status": r.status,
             "calculated_metrics": r.calculated_metrics,
@@ -380,7 +379,7 @@ async def approve_recommendation(
         force_close = date.today()
     # A-P5-05: Track capital_deployed and sector for sector value exposure
     contracts = 1
-    capital_deployed = float(rec.strike) * 100 * contracts
+    capital_deployed = Decimal(str(rec.strike)) * Decimal("100") * Decimal(contracts)
     sector = (rec_analysis.get("sector") or "Unknown")
     position = ActivePosition(
         id=uuid4(),
@@ -389,17 +388,17 @@ async def approve_recommendation(
         lifecycle_stage="MONITORING",
         entry_data={
             "strategy": rec.strategy,
-            "short_strike": float(rec.strike),
+            "short_strike": str(rec.strike),
             "expiry_date": expiry_date.isoformat(),
-            "entry_price": float(entry_price),
+            "entry_price": str(entry_price),
             "entry_timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "contracts": contracts,
-            "capital_deployed": capital_deployed,
+            "capital_deployed": str(capital_deployed),
             "sector": sector,
         },
         risk_rules={
-            "stop_loss_price": float(stop_loss),
-            "take_profit_price": float(take_profit),
+            "stop_loss_price": str(stop_loss),
+            "take_profit_price": str(take_profit),
             "max_dte_hold": 21,
             "force_close_date": force_close.isoformat(),
         },
@@ -470,7 +469,7 @@ async def create_manual_position(
 
     capital_deployed = payload.capital_deployed
     if capital_deployed is None:
-        capital_deployed = float(payload.short_strike) * 100 * payload.contracts
+        capital_deployed = payload.short_strike * Decimal("100") * Decimal(payload.contracts)
 
     position = ActivePosition(
         id=uuid4(),
@@ -479,17 +478,17 @@ async def create_manual_position(
         lifecycle_stage="MONITORING",
         entry_data={
             "strategy": payload.strategy.value,
-            "short_strike": float(payload.short_strike),
+            "short_strike": str(payload.short_strike),
             "expiry_date": payload.expiry_date.isoformat(),
-            "entry_price": float(payload.entry_price),
+            "entry_price": str(payload.entry_price),
             "entry_timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "contracts": payload.contracts,
-            "capital_deployed": capital_deployed,
+            "capital_deployed": str(capital_deployed),
             "sector": payload.sector or "Unknown",
         },
         risk_rules={
-            "stop_loss_price": float(stop_loss),
-            "take_profit_price": float(take_profit),
+            "stop_loss_price": str(stop_loss),
+            "take_profit_price": str(take_profit),
             "max_dte_hold": 21,
             "force_close_date": force_close.isoformat(),
         },

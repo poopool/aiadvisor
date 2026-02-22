@@ -47,7 +47,7 @@ class ManualPositionCreate(BaseModel):
     sector: str | None = Field(
         "Unknown", description="The GICS sector of the underlying stock."
     )
-    capital_deployed: float | None = Field(
+    capital_deployed: Decimal | None = Field(
         None,
         description="The capital required for the position. Auto-calculated if not provided.",
     )

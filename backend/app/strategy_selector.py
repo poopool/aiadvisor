@@ -49,8 +49,6 @@ def select_strategy(
     A-P1-04: Map technical state to option strategy.
     Market Regime Filter (A-P1-07): Short Put only when regime_allows_short_put (SPY above 200 SMA).
     """
-    if trend == "bearish":
-        return "SHORT_CALL"  # or skip; we allow SHORT_CALL
     if trend == "bullish" and rsi_state != "overbought" and regime_allows_short_put:
         return "SHORT_PUT"
     if trend == "neutral" and regime_allows_short_put and rsi_state == "oversold":
