@@ -40,17 +40,17 @@ def fetch_option_chain(ticker: str, *, mock: bool = True, provider=None) -> dict
     if provider is None:
         from app.config import settings
         from app.services.providers import get_market_data_provider
-        provider = get_market_data_provider(mock=mock, polygon_api_key=settings.polygon_api_key)
+        provider = get_market_data_provider(mock=mock)
     chain = provider.get_option_chain(ticker)
     return _filter_chain_30_45_dte(chain)
 
 
-# A-FIX-02: Option liquidity gate — (Ask - Bid) / Bid_Price < 0.10 (Spread < 10%)
-OPTION_SPREAD_MAX_PCT = 0.10
+# A-FIX-02: Option liquidity gate — (Ask - Bid) / Bid_Price < 0.05 (Spread < 5%)
+OPTION_SPREAD_MAX_PCT = 0.05
 
 
 def filter_puts_by_liquidity(puts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """A-FIX-02: Keep only puts where (Ask - Bid) / Bid_Price < 0.10."""
+    """A-FIX-02: Keep only puts where (Ask - Bid) / Bid_Price < 0.05."""
     out = []
     for p in puts:
         bid = float(p.get("bid") or 0)
@@ -69,7 +69,7 @@ def select_strike_by_delta(
 ) -> dict[str, Any] | None:
     """
     A-P1-05: Select put strike by delta (short put: negative delta ~0.20–0.30).
-    A-FIX-02: Only considers puts passing option spread gate (Ask-Bid)/Bid < 10%.
+    A-FIX-02: Only considers puts passing option spread gate (Ask-Bid)/Bid < 5%.
     """
     puts = chain.get("puts") or []
     puts = filter_puts_by_liquidity(puts)

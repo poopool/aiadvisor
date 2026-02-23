@@ -1,8 +1,29 @@
 from datetime import date
 from decimal import Decimal
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, Field
+
+
+class Position(BaseModel):
+    """A-FIX-17: Response schema for GET /positions (Watchtower). Includes P&L fields from Phase 11."""
+
+    id: str
+    ticker: str
+    status: str
+    lifecycle_stage: str
+    entry_data: dict[str, Any]
+    risk_rules: dict[str, Any]
+    last_heartbeat: dict[str, Any] | None
+    created_at: str | None
+    market_value: Decimal | None = None
+    unrealized_pnl: Decimal | None = None
+    return_pct: Decimal | None = None
+    greeks: dict[str, float] | None = None
+
+    class Config:
+        from_attributes = True
 
 
 class StrategyType(str, Enum):
@@ -26,9 +47,23 @@ class ManualPositionCreate(BaseModel):
     sector: str | None = Field(
         "Unknown", description="The GICS sector of the underlying stock."
     )
-    capital_deployed: float | None = Field(
+    capital_deployed: Decimal | None = Field(
         None,
         description="The capital required for the position. Auto-calculated if not provided.",
+    )
+    stop_loss_trigger: Decimal | None = Field(
+        None,
+        description=(
+            "Mark price at which the position must be closed to enforce the 3x-credit risk cap. "
+            "Auto-calculated as entry_price * 3 if not provided."
+        ),
+    )
+    profit_target_btc: Decimal | None = Field(
+        None,
+        description=(
+            "Buy-to-close target price for the 50%% profit rule. "
+            "Auto-calculated as entry_price * 0.50 if not provided."
+        ),
     )
 
     class Config:
@@ -41,5 +76,7 @@ class ManualPositionCreate(BaseModel):
                 "entry_price": "4.20",
                 "contracts": 1,
                 "sector": "Information Technology",
+                "stop_loss_trigger": "12.60",
+                "profit_target_btc": "2.10",
             }
         }

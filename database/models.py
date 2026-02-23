@@ -6,7 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Date, DateTime, Numeric, String, Text, text
+from sqlalchemy import Date, DateTime, Numeric, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -82,7 +82,9 @@ class ActivePosition(Base):
     return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 4), nullable=True)
     greeks: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()"), onupdate=func.now()
+    )
 
     def __repr__(self) -> str:
         return f"ActivePosition(id={self.id}, ticker={self.ticker!r}, stage={self.lifecycle_stage!r})"

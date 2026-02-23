@@ -2,12 +2,16 @@
 # Run Phase 1 logic on liquid tickers with rate limiting and sector cap.
 
 import asyncio
+import logging
 from datetime import date, timedelta
 from typing import Any
 
 from app.analysis import run_analysis
+from app.watchman import DataFetchError
 from app.services.universe import load_sp500_universe, liquidity_filter, earnings_filter, sector_cap_check
 from app.services.rate_limit import get_rate_limiter, with_rate_limit
+
+logger = logging.getLogger("batch_analysis")
 
 
 async def run_batch_analysis(
@@ -49,7 +53,11 @@ async def run_batch_analysis(
                     continue
             results.append(rec)
             active_by_sector.setdefault(sector, []).append(ticker)
+        except DataFetchError as e:
+            logger.warning("Batch analysis data fetch failed for %s: %s", ticker, e)
+            continue
         except Exception:
+            logger.exception("Batch analysis failed for %s", ticker)
             continue
 
     return results
